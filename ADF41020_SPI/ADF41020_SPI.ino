@@ -6,12 +6,49 @@ We have a 14 Bit R Counter, 19 Bit N Counter, and a
 21 Bit Function Latch. All are sent to a 24 bit shift register, 
 the 2 LSBs dictate the  final destination. The serial order of 
 data is Function, R, N 
+
+The 3 signals that must connect to the ADF41020:
+SPI MOSI: Pin 11
+SPI CLK: PIN 13
+LE: Pin 7
+
+Note there is no SS or MISO. I also added another signal:
+SI: Pin 6
+
+This is an indicator that goes high before eqch frequency 
+sweep. It is not needed by the ADF41020 and is only used 
+for external syncing purposes.
 */
 
 // For SPI Communications
 #include <SPI.h>
 // For adjusting the system clock register
 #include <io.h>
+
+// How long we keep LE high for
+#define LE_DURATION 100
+// Delay between 24 bit serial data being sent
+// Must be larger than LE_DURATION
+#define TRANSMIT_DELAY 500
+// Delay between frequency sweep
+#define SWEEP_DELAY
+
+/* Here is how the delays work together:
+D0 (3 bytes) sent over spi
+LE then goes high for LE_DURATION
+Then we wait for TRANSMIT_DELAY
+D1 (3 bytes) sent over spi
+LE then goes high for LE_DURATION
+Then we wait for TRANSMIT_DELAY
+.
+.
+.
+Dend (3 bytes) sent over spi
+LE then goes high for LE_DURATION
+Then we wait for TRANSMIT_DELAY
+Then we also wait for SWEEP_DELAY
+Then it starts again from D0.
+*/
 
 //############################################################
 //                 PRECALCULATED SPI DATA                   //
@@ -267,7 +304,7 @@ void setup() {
   PORTD = B00000000;
   
   // declare a slave select pin for SPI
-  pinMode(SS, OUTPUT);
+  //pinMode(SS, OUTPUT);
   // Start the SPI library
   SPI.begin();
   // Set the bit order
@@ -280,23 +317,43 @@ void setup() {
   // the 16 MHz system clock. Default is divide by 4.
   SPI.setClockDivider(SPI_CLOCK_DIV128);
   
+  // Wait just a bit
+  delayMicroseconds(1000);
+  
   // Send 3 bytes of Function Latch Data. This is the same each time
-  SPIwrite24bitRegister(F2, F1, F0, false);
-
-  // Send 3 bytes of R Counter Data. This is the same each time
-  SPIwrite24bitRegister(R2, R1, R0, false);
+  // So we only send it once during setup
+  SPI.transfer(F2);
+  SPI.transfer(F1);
+  SPI.transfer(F0);
+  
+  // Now we must set LE high for a bit to push the data out of the shift register
+  PORTD = B10000000;
+  delayMicroseconds(LE_DURATION);
+  PORTD = B00000000;
  
+  delayMicroseconds(TRANSMIT_DELAY);
+
+  // Send 3 bytes of R Latch Data. This is the same each time
+  // So we only send it once during setup
+  SPI.transfer(R2);
+  SPI.transfer(R1);
+  SPI.transfer(R0);
+  
+  // Now we must set LE high for a bit to push the data out of the shift register
+  PORTD = B10000000;
+  delayMicroseconds(LE_DURATION);
+  PORTD = B00000000;
+ 
+  delayMicroseconds(TRANSMIT_DELAY);
 }
 
 //############################################################
 //                    WRITE 3 BYTES OVER SPI                //
 //############################################################
 void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFrame) {
-
-
-    
+  
   // Pull down SS
-  digitalWrite(SS, LOW);
+  //digitalWrite(SS, LOW);
   
   // Transfer the first byte
   // This also serves as a timer for how long we keep
@@ -313,15 +370,15 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
   else
     PORTD = B10000000;
     
-  delay(1);
+  delayMicroseconds(LE_DURATION);
  
   // After one byte transmission, set both LE and SI back low
   PORTD = B00000000;
   
+  delayMicroseconds(TRANSMIT_DELAY);
+
   // Return SS to high
-  digitalWrite(SS, HIGH);
-  
-  delay(10);
+  //digitalWrite(SS, HIGH);
 }
 
 //############################################################
@@ -332,7 +389,7 @@ void loop() {
   // Loop for the number of values in our frequency sweep
   for(int i = 0; i < sizeof(N0); i++) {
    
-    if(i==0)
+    if(i==1)
         SPIwrite24bitRegister(N2, N1[i], N0[i],true);
     else
         SPIwrite24bitRegister(N2, N1[i], N0[i],false);   
