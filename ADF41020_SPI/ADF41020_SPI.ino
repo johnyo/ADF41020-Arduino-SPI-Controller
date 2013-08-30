@@ -25,29 +25,31 @@ for external syncing purposes.
 // For adjusting the system clock register
 #include <io.h>
 
-// How long we keep LE high for
-#define LE_DURATION 100
+// How long we keep LE high for in microseconds
+#define LE_DURATION 500
 // Delay between 24 bit serial data being sent
-// Must be larger than LE_DURATION
-#define TRANSMIT_DELAY 5000
-// Delay between frequency sweep
-#define SWEEP_DELAY 100000
+// in microseconds
+// Must be larger than LE_DURATION 
+#define TRANSMIT_DELAY 1000000
+// Delay between frequency sweeps 
+// in microseconds
+#define SWEEP_DELAY 5000000
 
 /* Here is how the delays work together:
 D0 (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
+  LE then goes high for LE_DURATION
+    Then we wait for TRANSMIT_DELAY
 D1 (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
+  LE then goes high for LE_DURATION
+    Then we wait for TRANSMIT_DELAY
 .
 .
 .
 Dend (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
+  LE then goes high for LE_DURATION
+    Then we wait for TRANSMIT_DELAY
 Then we also wait for SWEEP_DELAY
-Then it starts again from D0.
+Then it starts again from D0
 */
 
 //############################################################
@@ -284,10 +286,10 @@ void setup() {
   
   // Divide system clock
   // Tell the AtMega we want to change the system clock
-  CLKPR = 0x80;    
+  //CLKPR = 0x80;    
   // 0x08 is a 1/256 prescaler = 60KHz for a 16MHz crystal
   // 0x03 gets us to around 1ms per 24 bit frame
-  CLKPR = 0x03;    
+  //CLKPR = 0x03;    
 
   // Pin 7 is Load Enable (LE). 
   // It goes high after every 24 bit frame
@@ -315,10 +317,10 @@ void setup() {
   SPI.setDataMode(SPI_MODE0);
   // Set the speed we want to transmit at. This divides
   // the 16 MHz system clock. Default is divide by 4.
-  SPI.setClockDivider(SPI_CLOCK_DIV128);
+  SPI.setClockDivider(SPI_CLOCK_DIV2);
   
   // Wait just a bit
-  delayMicroseconds(1000);
+  delayMicroseconds(SWEEP_DELAY);
   
   // Send 3 bytes of Function Latch Data. This is the same each time
   // So we only send it once during setup
@@ -395,6 +397,6 @@ void loop() {
         SPIwrite24bitRegister(N2, N1[i], N0[i],false);   
   }
   
-  delay(100);
+  delayMicroseconds(SWEEP_DELAY);
 }
 
