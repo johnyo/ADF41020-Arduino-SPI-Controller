@@ -1,4 +1,4 @@
-ADF41020-Arduiono-SPI-Controller
+ADF41020-Arduino-SPI-Controller
 ================================
 
 Arduino Uno based SPI Controller for the ADF41020 Development Board which allows sending custom frequency sweep commands at a much higher rate than the off-the-shelf Analog Devices GUI allows.
@@ -9,8 +9,8 @@ Instructions
 ------------
 Replace the "Precalculated SPI Data" section with your own data.
 
-
 Important Notes
 ---------------
 * You must desolder the resistors leading from the USB controller section of the ADF41020 board to the Data, CLK, and LE testpoints in order for this to work properly. Read the datasheet for the development board carefully.
-* The Arduino is at 5 Volts, the ADF41020 requires a max of 3. So when you solder the wires across, use a resistor divider. I used a 1.k and a 1.5k.
+* The Arduino is at 5 Volts, the ADF41020 requires a max of 3. So when you solder the wires across, use a resistor divider. I used a 1.0k and a 1.5k.
+
