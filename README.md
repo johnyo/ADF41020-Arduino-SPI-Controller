@@ -9,6 +9,8 @@ Instructions
 ------------
 Replace the "Precalculated SPI Data" section with your own data.
 
+SPI data is sent at the maximum rate, which you should leave alone. Adjust system sweep speed by using the delay constants defined at the top of the file.
+
 Important Notes
 ---------------
 * You must desolder the resistors leading from the USB controller section of the ADF41020 board to the Data, CLK, and LE testpoints in order for this to work properly. Read the datasheet for the development board carefully.
