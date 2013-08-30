@@ -284,18 +284,6 @@ byte N0 [] = {
 // Setup function, only run at the beginning
 void setup() {
   
-  // Divide system clock
-  // Tell the AtMega we want to change the system clock
-  //CLKPR = 0x80;    
-  // 0x08 is a 1/256 prescaler = 60KHz for a 16MHz crystal
-  // 0x03 gets us to around 1ms per 24 bit frame
-  //CLKPR = 0x03;    
-
-  // Pin 7 is Load Enable (LE). 
-  // It goes high after every 24 bit frame
-  // Pin 6 is Start Indicator (SI). 
-  // It goes high only at the beginning of every series
-  
   // Set pints 6 and 7 as outputs without changing the values
   // of any other pins. 
   // This is a C command so I can drive the pins
@@ -305,8 +293,6 @@ void setup() {
   // Initialize LE and SI to low
   PORTD = B00000000;
   
-  // declare a slave select pin for SPI
-  //pinMode(SS, OUTPUT);
   // Start the SPI library
   SPI.begin();
   // Set the bit order
@@ -354,9 +340,6 @@ void setup() {
 //############################################################
 void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFrame) {
   
-  // Pull down SS
-  //digitalWrite(SS, LOW);
-  
   // Transfer the first byte
   // This also serves as a timer for how long we keep
   // LE and SI high
@@ -378,9 +361,6 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
   PORTD = B00000000;
   
   delayMicroseconds(TRANSMIT_DELAY);
-
-  // Return SS to high
-  //digitalWrite(SS, HIGH);
 }
 
 //############################################################
