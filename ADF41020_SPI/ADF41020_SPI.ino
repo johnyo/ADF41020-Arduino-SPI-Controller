@@ -29,9 +29,9 @@ for external syncing purposes.
 #define LE_DURATION 100
 // Delay between 24 bit serial data being sent
 // Must be larger than LE_DURATION
-#define TRANSMIT_DELAY 500
+#define TRANSMIT_DELAY 5000
 // Delay between frequency sweep
-#define SWEEP_DELAY
+#define SWEEP_DELAY 100000
 
 /* Here is how the delays work together:
 D0 (3 bytes) sent over spi
@@ -389,7 +389,7 @@ void loop() {
   // Loop for the number of values in our frequency sweep
   for(int i = 0; i < sizeof(N0); i++) {
    
-    if(i==1)
+    if(i==0)
         SPIwrite24bitRegister(N2, N1[i], N0[i],true);
     else
         SPIwrite24bitRegister(N2, N1[i], N0[i],false);   
