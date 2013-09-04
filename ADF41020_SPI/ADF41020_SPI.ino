@@ -5,7 +5,8 @@
 We have a 14 Bit R Counter, 19 Bit N Counter, and a
 21 Bit Function Latch. All are sent to a 24 bit shift register, 
 the 2 LSBs dictate the  final destination. The serial order of 
-data is Function, R, N 
+data is Function, R (send once), then N repeating. There is
+no SS or MISO, only CLK, MOSI, LE.
 
 The 3 signals that must connect to the ADF41020:
 SPI MOSI: Pin 11
@@ -22,8 +23,6 @@ for external syncing purposes.
 
 // For SPI Communications
 #include <SPI.h>
-// For adjusting the system clock register
-#include <io.h>
 
 // How long we keep LE high for in microseconds
 #define LE_DURATION 500
