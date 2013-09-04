@@ -1,0 +1,19 @@
+Here is what you need to run this system:
+
+15V Power Supply
+- Connect 15VGND to the GND peg on the ADF chip (in the picture in this directory, that is the far left)
+- Connect 15VPWR to the Red peg in the middle of the ADF chip (in thie picture, that is 2nd to the left)
+
+5V Power Supply
+- Plut 5VGND and 5VPWR into the plugs on the board.
+
+Desolder:
+- Resistors leading to the holes for SCK, LE, and DATA
+- Connect MOSI from Arduino to resistor divider / level shifter then to DATA on Board
+- Connect SCK from Arduino to resistor divider / level shifter then to CLK on Board
+- Connect LE from Arduino to resistor divider / level shifter then to LE on Board
+
+I used a shield for the Uno for all the resistor dividers / soldering.
+
+GND
+- You must hook up GND on the Arduino to GND on the ADF board. I ran GND to the anode of the big diode on the ADF board right next to the power switch and just soldered it on.
