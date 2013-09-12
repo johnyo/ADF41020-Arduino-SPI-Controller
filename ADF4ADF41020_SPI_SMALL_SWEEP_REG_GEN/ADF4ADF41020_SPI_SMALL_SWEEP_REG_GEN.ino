@@ -199,77 +199,72 @@ void setup() {
 // POPULATE THE REGISTER ARRAY
 //############################################################
 
-void calcRegisters(String RFOutFreqBox, String RefFreqBox, String PFDFreqBox){
+void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   
   // Initialize parameters for the sweep
-  PrescalerBoxIndex = 1;
-  ChargePumpSetting1BoxSelectedIndex = 3;
-  ChargePumpSetting2BoxSelectedIndex = 3;
-  ChargePumpGainBoxSelectedIndex = 0;
-  ChargePump3StateBoxSelectedIndex = 0;
-  FastLockBoxSelectedIndex = 0;
-  TimeoutBoxSelectedIndex = 0;
-  PhaseDetectorPolarityBoxSelectedIndex = 1;
-  CounterResetBoxSelectedIndex = 0;
-  LockDetectPrecisionBoxSelectedIndex = 0;
-  PowerDownBoxSelectedIndex = 0;
-  ABPWBoxSelectedIndex=0;
-  SyncBoxSelectedIndex=0;
-  DelayBoxSelectedIndex=0;
-  MuxoutBoxSelectedIndex=0;
-  TestmodesBoxSelectedIndex=0;
-  PhaseDetectoPolarityBoxSelectedIndex=0;
+  int PrescalerBoxIndex = 1;
+  int ChargePumpSetting1SelectedIndex = 3;
+  int ChargePumpSetting2SelectedIndex = 3;
+  int ChargePumpGainBoxSelectedIndex = 0;
+  int ChargePump3StateBoxSelectedIndex = 0;
+  int FastLockBoxSelectedIndex = 0;
+  int TimeoutBoxSelectedIndex = 0;
+  int PhaseDetectorPolarityBoxSelectedIndex = 1;
+  int CounterResetBoxSelectedIndex = 0;
+  int LockDetectPrecisionBoxSelectedIndex = 0;
+  int PowerDownBoxSelectedIndex = 0;
+  int ABPWBoxSelectedIndex=0;
+  int SyncBoxSelectedIndex=0;
+  int DelayBoxSelectedIndex=0;
+  int MuxoutBoxSelectedIndex=0;
+  int TestmodesBoxSelectedIndex=0;
+  int PhaseDetectoPolarityBoxSelectedIndex=0;
+  int Reg[3] = {};
   // end params
   
-  float RFout = atof(RFOutFreqBox);
-  float REFin = atof(RefFreqBox);
-  float PFDFreq = atof(PFDFreqBox);
+  float RFout = RFOutFreqBox;
+  float REFin = RefFreqBox;
+  float PFDFreq = PFDFreqBox;
   
   RFout /= 4;
   
-  P = (int)pow(2,8*PrescalerBoxIndex);
-  R = (int)(REFin*1000/PFDFreq);
-  N = (int)(RFout*1000/PFDFreq);
-  B = (int)(N/P);
-  A = (int)(N-(B*P));
+  int P = (int)pow(2,8*PrescalerBoxIndex);
+  int R = (int)(REFin*1000/PFDFreq);
+  int N = (int)(RFout*1000/PFDFreq);
+  int B = (int)(N/P);
+  int A = (int)(N-(B*P));
   
-  BString=(String)B;
-  PString=(String)P;
-  AString=(String)A;
-  PFDString=PFDFreqBox;
-  RFoutString=(String)(((B*P+A)*PFDFreq) / 1000);
-  Prescaler = (byte)PrescalerBoxIndex;
-  CPsetting1 = (byte)ChargePumpSetting1SelectedIndex;
-  CPsetting2 = (byte)ChargePumpSetting2SelectedIndex;
-  CPGain = (byte)ChargePumpGainBoxSelectedIndex;
-  CP3state = (byte)ChargePump3StateBoxSelectedIndex;
-  Fastlock = (byte)FastLockBoxSelectedIndex;
+  byte Prescaler = (byte)PrescalerBoxIndex;
+  byte CPsetting1 = (byte)ChargePumpSetting1SelectedIndex;
+  byte CPsetting2 = (byte)ChargePumpSetting2SelectedIndex;
+  byte CPGain = (byte)ChargePumpGainBoxSelectedIndex;
+  byte CP3state = (byte)ChargePump3StateBoxSelectedIndex;
+  byte Fastlock = (byte)FastLockBoxSelectedIndex;
   
-  if (Fastlock==2) FastLock++;
+  if (Fastlock==2) Fastlock++;
   
-  Timeout = (byte)TimeoutBoxSelectedIndex;
-  PDPolarity = (byte)PhaseDetectorPolarityBoxSelectedIndex;
-  CounterReset = (byte)CounterResetBoxSelectedIndex;
-  LDP = (byte)LockDetectPrecisionBoxSelectedIndex;
-  Powerdown = (byte)PowerDownBoxSelectedIndex;
+  byte Timeout = (byte)TimeoutBoxSelectedIndex;
+  byte PDPolarity = (byte)PhaseDetectorPolarityBoxSelectedIndex;
+  byte CounterReset = (byte)CounterResetBoxSelectedIndex;
+  byte LDP = (byte)LockDetectPrecisionBoxSelectedIndex;
+  byte Powerdown = (byte)PowerDownBoxSelectedIndex;
   
   if (Powerdown==2) Powerdown++;
   
-  ABPW = (byte)ABPWBoxSelectedIndex;
-  Sync = (byte)SyncBoxSelectedIndex;
-  Delay = (byte)DelayBoxSelectedIndex;
-  Muxout = (byte)MuxoutBoxSelectedIndex;
+  byte ABPW = (byte)ABPWBoxSelectedIndex;
+  byte Sync = (byte)SyncBoxSelectedIndex;
+  byte Delay = (byte)DelayBoxSelectedIndex;
+  byte Muxout = (byte)MuxoutBoxSelectedIndex;
   
-  Testmodes = (byte)TestmodesBoxSelectedIndex;
+  byte Testmodes = (byte)TestmodesBoxSelectedIndex;
   
   Reg[0] = (int)( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
   Reg[1] = (int)( CPGain * pow(2,21)+(B&0x1FFF)*pow(2,8)+(A& 0x3F)*pow(2,2)+1};
   Reg[2] = (int)( Prescaler * pow(2,22)+CPSetting2*pow(2,18)+CPsetting1*pow(2,15)+Timeout*pow(2,11)+Fastloc*pow(2,9)+CP#state*pow(2,8)+PDPolarity*pow(2,7)+Muxout*pow(2,4)+Powerdown*pow(2,3)+CounterReset*pow(2,2)+2);
-  }
   
-  RCounterLatchBox = "{0:X}"+(String)Reg[0];
-  NCounterLatchBox = "{0:X}"+(String)Reg[1];
-  FunctionLatchBox = "{0:X}"+(String)Reg[2];
+  String RCounterLatchBox = "{0:X}"+(String)(int)( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
+  String NCounterLatchBox = "{0:X}"+(String)Reg[1];
+  String FunctionLatchBox = "{0:X}"+(String)Reg[2];
   }
 //############################################################
 // DELAY FUNCTION TO AVOID INT MAX
