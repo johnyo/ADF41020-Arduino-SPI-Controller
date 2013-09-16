@@ -1,3 +1,5 @@
+#include <SoftwareSerial.h>
+
 //############################################################
 // SPI Serial Interface for the ADF41020
 //############################################################
@@ -29,15 +31,20 @@ for external syncing purposes.
 // Delay between 24 bit serial data being sent
 // in microseconds
 // Must be larger than LE_DURATION
-#define TRANSMIT_DELAY 1000//Must be smaller than 16383
+#define TRANSMIT_DELAY 1000-LE_DURATION//Must be smaller than 16383
 // Delay between frequency sweeps
 // in microseconds
 #define SWEEP_DELAY 0 // Must be smaller than 16383
 // Integer values can be maxed out if large enough
 // This value is used to indicate to the delayer function
-// if the pause is too large.
-#define DELAY_IS_MICROSECONDS false 
+// if the pause should occur.
+#define LONG_DELAY true;
+// Integer values can be maxed out if large enough
+// This value is used to indicate to the delayer function
+// if the pause should occur.
+#define DELAY_IS_MICROSECONDS false
 
+#define LONG_DELAY_DURATION 100
 /* Here is how the delays work together:
 D0 (3 bytes) sent over spi
 LE then goes high for LE_DURATION
@@ -72,71 +79,75 @@ byte F0 = 0x02; // LSBs
 // Precalculated byte arrays for N Counter
 byte N2 = 0x00; // MSBs
 
-// Middle Byte of N Counter
-byte N1 [] = {
-0x83,
-0x84,
-0x85,
-0x87,
-0x88,
-0x89,
-0x8A,
-0x8C,
-0x8D,
-0x8E,
-0x8F,
-0x91,
-0x92,
-0x93,
-0x94,
-0x96,
-0x97,
-0x98,
-0x99,
-0x9B,
-0x9C,
-0x9D,
-0x9E,
-0xA0,
-0xA1,
-0xA2,
-0x83,
-0x84,
-0x85,
+// Vector of frequencies in MHz
+int freqVec [] = {
+10415,
+10460,
+10505,
+10550,
+10595,
+10640,
+10685,
+10730,
+10775,
+10820,
+10865,
+10910,
+10955,
+11000,
+11045,
+11090,
+11135,
+11180,
+11225,
+11270,
+11315,
+11360,
+11405,
+11450,
+11495,
+11540,
+11585,
+11630,
+11675,
+11720,
+11765,
+11810,
+11855,
+11900,
+11945,
+11990,
+12035,
+12080,
+12125,
+12170,
+12215,
+12260,
+12305,
+12350,
+12395,
+12440,
+12485,
+12530,
+12575,
+12620,
+12665,
+12710,
+12755,
+12800,
+12845,
+12890,
+12935,
+12980,
+13025,
+13070,
 };
 
-// Least significant byte of N Counter
-byte N0 [] = {
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x31,
-0x01,
-0x11,
-0x21,
-0x11,
-0x21,
-0x31,
-};
+// Middle Byte of N Counter to be populated by CalcRegisters
+byte N1 [sizeof(freqVec)/sizeof(int)] = {};
+
+// Least significant byte of N Counter to be populated by CalcRegisters
+byte N0 [sizeof(freqVec)/sizeof(int)] = {};
 
 //############################################################
 // SETUP //
@@ -152,6 +163,19 @@ void setup() {
   
   // Initialize LE and SI to low
   PORTD = B00000000;
+  
+  // Initialize Serial Port for debugging
+  Serial.begin(9600);
+  
+  // Populate the NCounter arrays
+  for(int i =0; i< sizeof(freqVec)/sizeof(int); i++){
+    
+    // N0 is the low byte
+    N0[i] = (byte)lowByte(calcRegisters(freqVec[i], 100, 1250));
+    
+    // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
+    N1[i] = (byte)lowByte(calcRegisters(freqVec[i], 100, 1250) >> 8);
+  }
   
   // Start the SPI library
   SPI.begin();
@@ -199,7 +223,7 @@ void setup() {
 // POPULATE THE REGISTER ARRAY
 //############################################################
 
-void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
+long calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   
   // Initialize parameters for the sweep
   int PrescalerBoxIndex = 1;
@@ -209,7 +233,7 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   int ChargePump3StateBoxSelectedIndex = 0;
   int FastLockBoxSelectedIndex = 0;
   int TimeoutBoxSelectedIndex = 0;
-  int PhaseDetectorPolarityBoxSelectedIndex = 1;
+  int PhaseDetectorPolarityBoxSelectedIndex = 0;
   int CounterResetBoxSelectedIndex = 0;
   int LockDetectPrecisionBoxSelectedIndex = 0;
   int PowerDownBoxSelectedIndex = 0;
@@ -217,23 +241,26 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   int SyncBoxSelectedIndex=0;
   int DelayBoxSelectedIndex=0;
   int MuxoutBoxSelectedIndex=0;
-  int TestmodesBoxSelectedIndex=0;
-  int PhaseDetectoPolarityBoxSelectedIndex=0;
-  int Reg[3] = {};
+  int TestmodesBoxSelectedIndex=1;
+  float Reg[3] = {};
   // end params
-  
+ 
   float RFout = RFOutFreqBox;
   float REFin = RefFreqBox;
   float PFDFreq = PFDFreqBox;
   
-  RFout /= 4;
+  RFout = RFout/4;
   
-  int P = (int)pow(2,8*PrescalerBoxIndex);
+  
+  //Calculate P, R, N, B, & A values for calculating register
+  int P = (int)pow(2,PrescalerBoxIndex) * 8;
   int R = (int)(REFin*1000/PFDFreq);
   int N = (int)(RFout*1000/PFDFreq);
   int B = (int)(N/P);
   int A = (int)(N-(B*P));
   
+  
+  //Cast relevant integer values to bytes
   byte Prescaler = (byte)PrescalerBoxIndex;
   byte CPsetting1 = (byte)ChargePumpSetting1SelectedIndex;
   byte CPsetting2 = (byte)ChargePumpSetting2SelectedIndex;
@@ -243,6 +270,8 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   
   if (Fastlock==2) Fastlock++;
   
+  
+  //Cast more relevant integer values to bytes
   byte Timeout = (byte)TimeoutBoxSelectedIndex;
   byte PDPolarity = (byte)PhaseDetectorPolarityBoxSelectedIndex;
   byte CounterReset = (byte)CounterResetBoxSelectedIndex;
@@ -251,31 +280,32 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   
   if (Powerdown==2) Powerdown++;
   
+  //More relevant integer values to bytes
   byte ABPW = (byte)ABPWBoxSelectedIndex;
   byte Sync = (byte)SyncBoxSelectedIndex;
   byte Delay = (byte)DelayBoxSelectedIndex;
   byte Muxout = (byte)MuxoutBoxSelectedIndex;
-  
   byte Testmodes = (byte)TestmodesBoxSelectedIndex;
   
-  Reg[0] = (int)( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
-  Reg[1] = (int)( CPGain * pow(2,21)+(B&0x1FFF)*pow(2,8)+(A& 0x3F)*pow(2,2)+1};
-  Reg[2] = (int)( Prescaler * pow(2,22)+CPSetting2*pow(2,18)+CPsetting1*pow(2,15)+Timeout*pow(2,11)+Fastloc*pow(2,9)+CP#state*pow(2,8)+PDPolarity*pow(2,7)+Muxout*pow(2,4)+Powerdown*pow(2,3)+CounterReset*pow(2,2)+2);
-  
-  String RCounterLatchBox = "{0:X}"+(String)(int)( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
-  String NCounterLatchBox = "{0:X}"+(String)Reg[1];
-  String FunctionLatchBox = "{0:X}"+(String)Reg[2];
+  // Calculate the register values
+  Reg[0] = ( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
+  Reg[1] = ( CPGain * pow(2,21)+(B&0x1FFF)*pow(2,8)+(A&0x3F)*pow(2,2)+1);
+  Reg[2] = ( Prescaler * pow(2,22)+CPsetting2*pow(2,18)+CPsetting1*pow(2,15)+Timeout*pow(2,11)+Fastlock*pow(2,9)+CP3state*pow(2,8)+PDPolarity*pow(2,7)+Muxout*pow(2,4)+Powerdown*pow(2,3)+CounterReset*pow(2,2)+2);
+
+  // Return the NCounter Value
+  return (long)Reg[1];  
   }
+  
 //############################################################
 // DELAY FUNCTION TO AVOID INT MAX
 //############################################################
 
-void delayer(int delval, boolean delayType){
+void delayer(int delval, boolean ifDelay){
+
+    if( ifDelay){
+      delay(delval);
+    }
   
-  if(DELAY_IS_MICROSECONDS)
-    delayMicroseconds(delval);
-  else
-    delay(delval);
     
 }
 
@@ -320,5 +350,6 @@ void loop() {
         SPIwrite24bitRegister(N2, N1[i], N0[i],false);
   }
   
+  SPIwrite24bitRegister(N2, N1[0], N0[0], false);
   delayer(SWEEP_DELAY, DELAY_IS_MICROSECONDS);
 }
