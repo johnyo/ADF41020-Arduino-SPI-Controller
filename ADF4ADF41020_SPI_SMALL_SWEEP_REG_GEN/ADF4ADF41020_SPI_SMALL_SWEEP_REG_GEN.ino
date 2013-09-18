@@ -175,6 +175,9 @@ void setup() {
     
     // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
     N1[i] = (byte)lowByte(calcRegisters(freqVec[i], 100, 1250) >> 8);
+    
+    Serial.println(N0[i]);
+    Serial.println(N1[i]);
   }
   
   // Start the SPI library
@@ -218,6 +221,16 @@ void setup() {
  
   delayer(TRANSMIT_DELAY, DELAY_IS_MICROSECONDS);
 }
+
+//############################################################
+// POPULATE THE RCOUNTER
+//############################################################
+
+/*long calcRCounter(float REFin, float PFDFreq){
+  int R = (int)(REFin*1000/PFDFreq);
+  byte Testmodes = (byte)1;
+  return ( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
+ }*/
 
 //############################################################
 // POPULATE THE REGISTER ARRAY
