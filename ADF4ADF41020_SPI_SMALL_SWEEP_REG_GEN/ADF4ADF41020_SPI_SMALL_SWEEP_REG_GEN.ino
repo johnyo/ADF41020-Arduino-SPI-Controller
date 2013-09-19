@@ -26,41 +26,26 @@ for external syncing purposes.
 // For SPI Communications
 #include <SPI.h>
 
-// How long we keep LE high for in microseconds
-#define LE_DURATION 500 // Must be smaller than 16383
+#define PULSE_DURATION 500 // Must be smaller than 16383
 // Delay between 24 bit serial data being sent
 // in microseconds
-// Must be larger than LE_DURATION
-#define TRANSMIT_DELAY 1000-LE_DURATION//Must be smaller than 16383
+// Must be larger than PULSE_DURATION
+
+#define DWELL_TIME 1000-PULSE_DURATION//Must be smaller than 16383
 // Delay between frequency sweeps
 // in microseconds
-#define SWEEP_DELAY 0 // Must be smaller than 16383
+
+#define SWEEP_PAUSE 0 // Must be smaller than 16383
 // Integer values can be maxed out if large enough
 // This value is used to indicate to the delayer function
 // if the pause should occur.
-#define LONG_DELAY true;
-// Integer values can be maxed out if large enough
-// This value is used to indicate to the delayer function
-// if the pause should occur.
+
 #define DELAY_IS_MICROSECONDS false
 
-#define LONG_DELAY_DURATION 100
-/* Here is how the delays work together:
-D0 (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
-D1 (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
-.
-.
-.
-Dend (3 bytes) sent over spi
-LE then goes high for LE_DURATION
-Then we wait for TRANSMIT_DELAY
-Then we also wait for SWEEP_DELAY
-Then it starts again from D0
-*/
+// Integer values can be maxed out if large enough
+// This value is used to indicate to the delayer function
+// if the pause should occur in microsecond for production purposes
+// or in milliseconds for observation on an O-scope.
 
 //############################################################
 // PRECALCULATED SPI DATA //
@@ -143,16 +128,49 @@ int freqVec [] = {
 13070,
 };
 
-// Middle Byte of N Counter to be populated by CalcRegisters
-byte N1 [sizeof(freqVec)/sizeof(int)] = {};
+//############################################################
+// N Counter Arrays
+//############################################################
 
 // Least significant byte of N Counter to be populated by CalcRegisters
 byte N0 [sizeof(freqVec)/sizeof(int)] = {};
+
+// Middle Byte of N Counter to be populated by CalcRegisters
+byte N1 [sizeof(freqVec)/sizeof(int)] = {};
+
+// MSB remains constant as declared above
+
+//############################################################
+// R Latch Arrays
+//############################################################
+
+// Least significant byte of the R Latch to be populated by CalcRegisters
+byte R0A [sizeof(freqVec)/sizeof(int)] = {};
+
+// Middle Byte of R Latch to be populated by CalcRegisters
+byte R1A [sizeof(freqVec)/sizeof(int)] = {};
+
+// Most significant byte of R Latch to be populated by CalcRegisters
+byte R2A [sizeof(freqVec)/sizeof(int)] = {};
+
+//#############################################################
+// Function Latch Arrays
+//#############################################################
+
+// Least significant byte of the Function Latch to be populated by CalcRegisters
+byte F0A [sizeof(freqVec)/sizeof(int)] = {};
+
+// Middle Byte of Function Latch to be populated by CalcRegisters
+byte F1A [sizeof(freqVec)/sizeof(int)] = {};
+
+// Most significant byte of Function Latch to be populated by CalcRegisters
+byte F2A [sizeof(freqVec)/sizeof(int)] = {};
 
 //############################################################
 // SETUP //
 //############################################################
 // Setup function, only run at the beginning
+
 void setup() {
   
   // Set pints 6 and 7 as outputs without changing the values
@@ -167,17 +185,9 @@ void setup() {
   // Initialize Serial Port for debugging
   Serial.begin(9600);
   
-  // Populate the NCounter arrays
-  for(int i =0; i< sizeof(freqVec)/sizeof(int); i++){
-    
-    // N0 is the low byte
-    N0[i] = (byte)lowByte(calcRegisters(freqVec[i], 100, 1250));
-    
-    // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
-    N1[i] = (byte)lowByte(calcRegisters(freqVec[i], 100, 1250) >> 8);
-    
-    Serial.println(N0[i]);
-    Serial.println(N1[i]);
+  // Populate the NCounter and R Latch arrays
+  for(int i =0; i< sizeof(freqVec)/sizeof(int); i++){ 
+    calcRegisters(freqVec[i], 100, 1250, i);
   }
   
   // Start the SPI library
@@ -193,7 +203,7 @@ void setup() {
   SPI.setClockDivider(SPI_CLOCK_DIV2);
   
   // Wait just a bit
-  delayer(SWEEP_DELAY, DELAY_IS_MICROSECONDS);
+  delayer(SWEEP_PAUSE, DELAY_IS_MICROSECONDS);
   
   // Send 3 bytes of Function Latch Data. This is the same each time
   // So we only send it once during setup
@@ -203,10 +213,10 @@ void setup() {
   
   // Now we must set LE high for a bit to push the data out of the shift register
   PORTD = B10000000;
-  delayMicroseconds(LE_DURATION);
+  delayMicroseconds(PULSE_DURATION);
   PORTD = B00000000;
  
-  delayer(TRANSMIT_DELAY, DELAY_IS_MICROSECONDS);
+  delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
  
   // Send 3 bytes of R Latch Data. This is the same each time
   // So we only send it once during setup
@@ -216,10 +226,10 @@ void setup() {
   
   // Now we must set LE high for a bit to push the data out of the shift register
   PORTD = B10000000;
-  delayMicroseconds(LE_DURATION);
+  delayMicroseconds(PULSE_DURATION);
   PORTD = B00000000;
  
-  delayer(TRANSMIT_DELAY, DELAY_IS_MICROSECONDS);
+  delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
 }
 
 //############################################################
@@ -236,7 +246,7 @@ void setup() {
 // POPULATE THE REGISTER ARRAY
 //############################################################
 
-long calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
+void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox, int i){
   
   // Initialize parameters for the sweep
   int PrescalerBoxIndex = 1;
@@ -263,16 +273,14 @@ long calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   float PFDFreq = PFDFreqBox;
   
   RFout = RFout/4;
-  
-  
+   
   //Calculate P, R, N, B, & A values for calculating register
   int P = (int)pow(2,PrescalerBoxIndex) * 8;
   int R = (int)(REFin*1000/PFDFreq);
   int N = (int)(RFout*1000/PFDFreq);
   int B = (int)(N/P);
   int A = (int)(N-(B*P));
-  
-  
+ 
   //Cast relevant integer values to bytes
   byte Prescaler = (byte)PrescalerBoxIndex;
   byte CPsetting1 = (byte)ChargePumpSetting1SelectedIndex;
@@ -282,7 +290,6 @@ long calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   byte Fastlock = (byte)FastLockBoxSelectedIndex;
   
   if (Fastlock==2) Fastlock++;
-  
   
   //Cast more relevant integer values to bytes
   byte Timeout = (byte)TimeoutBoxSelectedIndex;
@@ -304,22 +311,39 @@ long calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox){
   Reg[0] = ( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
   Reg[1] = ( CPGain * pow(2,21)+(B&0x1FFF)*pow(2,8)+(A&0x3F)*pow(2,2)+1);
   Reg[2] = ( Prescaler * pow(2,22)+CPsetting2*pow(2,18)+CPsetting1*pow(2,15)+Timeout*pow(2,11)+Fastlock*pow(2,9)+CP3state*pow(2,8)+PDPolarity*pow(2,7)+Muxout*pow(2,4)+Powerdown*pow(2,3)+CounterReset*pow(2,2)+2);
-
-  // Return the NCounter Value
-  return (long)Reg[1];  
+  
+  // N0 is the low byte
+  N0[i] = (byte)lowByte((long)Reg[1]);
+    
+  // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
+  N1[i] = (byte)lowByte((long)Reg[1] >> 8);
+  
+  // If this is the first iteration, the R Latch should be set
+  if( i == 0){
+     R0 = (byte)(lowByte((long)Reg[0])); // The LSB of the R Latch
+     R1 = (byte)(lowByte((long)Reg[0] >> 8)); // The middle byte of the R LAtch
+     R2 = (byte)(lowByte((long)Reg[0] >> 16)); // The MSB of the R Latch
   }
+  
+  // R0A is the low byte of the R Latch
+  R0A[i] = (byte)(lowByte((long)Reg[0]));
+  
+  // R1A is the middle byte of the R Latch
+  R1A[i] = (byte)(lowByte((long)Reg[0] >> 8));
+  
+  // R1A is the high byte of the R Latch
+  R2A[i] = (byte)(lowByte((long)Reg[0] >> 16));
+    
+}
   
 //############################################################
 // DELAY FUNCTION TO AVOID INT MAX
 //############################################################
 
 void delayer(int delval, boolean ifDelay){
-
     if( ifDelay){
       delay(delval);
-    }
-  
-    
+    }  
 }
 
 //############################################################
@@ -342,11 +366,11 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
   else
     PORTD = B10000000;
     
-  delayMicroseconds(LE_DURATION);
+  delayMicroseconds(PULSE_DURATION);
   // After one byte transmission, set both LE and SI back low
   PORTD = B00000000;
   
-delayer(TRANSMIT_DELAY, DELAY_IS_MICROSECONDS);
+delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
 }
 
 //############################################################
@@ -364,5 +388,5 @@ void loop() {
   }
   
   SPIwrite24bitRegister(N2, N1[0], N0[0], false);
-  delayer(SWEEP_DELAY, DELAY_IS_MICROSECONDS);
+  delayer(SWEEP_PAUSE, DELAY_IS_MICROSECONDS);
 }
