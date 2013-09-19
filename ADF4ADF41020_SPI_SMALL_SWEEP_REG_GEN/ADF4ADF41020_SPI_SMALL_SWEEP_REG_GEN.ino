@@ -52,9 +52,9 @@ for external syncing purposes.
 //############################################################
 
 // R Counter Latch is static at 0x910140
-byte R2 = 0x91; // MSBs
-byte R1 = 0x01;
-byte R0 = 0x40; // LSBs
+byte R2; // MSBs
+byte R1;
+byte R0; // LSBs
 
 // Function Latch is static at 0x4D8002
 byte F2 = 0x4D; // MSBs
