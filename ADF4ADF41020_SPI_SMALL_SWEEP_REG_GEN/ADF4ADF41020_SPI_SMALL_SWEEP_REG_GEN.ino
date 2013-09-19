@@ -51,7 +51,6 @@ for external syncing purposes.
 // PRECALCULATED SPI DATA //
 //############################################################
 
-// R Counter Latch is static at 0x910140
 byte R2; // MSBs
 byte R1;
 byte R0; // LSBs
