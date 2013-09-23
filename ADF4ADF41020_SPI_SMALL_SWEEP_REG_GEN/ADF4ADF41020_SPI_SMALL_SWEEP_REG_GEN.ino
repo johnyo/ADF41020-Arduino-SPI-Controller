@@ -26,42 +26,36 @@ for external syncing purposes.
 // For SPI Communications
 #include <SPI.h>
 
-#define PULSE_DURATION 500 // Must be smaller than 16383
-// Delay between 24 bit serial data being sent
-// in microseconds
-// Must be larger than PULSE_DURATION
-
-#define DWELL_TIME 1000-PULSE_DURATION//Must be smaller than 16383
-// Delay between frequency sweeps
+#define DWELL_TIME 1000 // Must be smaller than 16383
+// The time spent at each frequency (which is the delay between 24 bit serial data being sent)
 // in microseconds
 
 #define SWEEP_PAUSE 0 // Must be smaller than 16383
-// Integer values can be maxed out if large enough
-// This value is used to indicate to the delayer function
-// if the pause should occur.
+// Delay between frequency sweeps
+// in microseconds
 
-#define DELAY_IS_MICROSECONDS false
+#define PULSE_DURATION 500 // Must be smaller than 16383
+// The duration of pulses in all control signals
+// in microseconds
+// Must be shorter than DWELL_TIME and SWEEP_PAUSE
 
-// Integer values can be maxed out if large enough
-// This value is used to indicate to the delayer function
-// if the pause should occur in microsecond for production purposes
-// or in milliseconds for observation on an O-scope.
+#define LONG_DELAY 100 // Must be smaller than 16383
+// The additional delay for dwell time and sweep pause to
+// slow down the sweep for manual observation
+// in milliseconds
+
+#define DO_LONG_DELAY false
+// if true, then LONG_DELAY is added to DWELL_TIME and SWEEP_PAUSE
 
 //############################################################
 // PRECALCULATED SPI DATA //
 //############################################################
 
-byte R2; // MSBs
-byte R1;
-byte R0; // LSBs
+// RF Input Frequency in MHz
+#define RFInputFrequency 100
 
-// Function Latch is static at 0x4D8002
-byte F2 = 0x4D; // MSBs
-byte F1 = 0x80;
-byte F0 = 0x02; // LSBs
-
-// Precalculated byte arrays for N Counter
-byte N2 = 0x00; // MSBs
+// PFD Frequency in MHz
+#define PFDFrequency 1250
 
 // Vector of frequencies in MHz
 int freqVec [] = {
@@ -137,11 +131,20 @@ byte N0 [sizeof(freqVec)/sizeof(int)] = {};
 // Middle Byte of N Counter to be populated by CalcRegisters
 byte N1 [sizeof(freqVec)/sizeof(int)] = {};
 
-// MSB remains constant as declared above
+// Precalculated byte arrays for N Counter, this is always 0x00
+byte N2 = 0x00; // MSBs
 
 //############################################################
 // R Latch Arrays
 //############################################################
+// At this point we're assuming constant Rcounters throughout the sweep
+// if this is not the case, we log to the serial monitor an error
+// and stop the code execution
+
+// RCounter bytes
+byte R2; // MSBs
+byte R1;
+byte R0; // LSBs
 
 // Least significant byte of the R Latch to be populated by CalcRegisters
 byte R0A [sizeof(freqVec)/sizeof(int)] = {};
@@ -155,6 +158,14 @@ byte R2A [sizeof(freqVec)/sizeof(int)] = {};
 //#############################################################
 // Function Latch Arrays
 //#############################################################
+// At this point we're assuming constant Function Latches throughout the sweep
+// if this is not the case, we log to the serial monitor an error
+// and stop the code execution
+
+// Function Latch bytes
+byte F2; // MSBs
+byte F1; 
+byte F0;// LSBs
 
 // Least significant byte of the Function Latch to be populated by CalcRegisters
 byte F0A [sizeof(freqVec)/sizeof(int)] = {};
@@ -186,9 +197,25 @@ void setup() {
   
   // Populate the NCounter and R Latch arrays
   for(int i =0; i< sizeof(freqVec)/sizeof(int); i++){ 
-    calcRegisters(freqVec[i], 100, 1250, i);
+    calcRegisters(freqVec[i], RFInputFrequency, PFDFrequency, i);
+        if(R0 != R0A[i] || R1 != R1A[i] || R2 != R2A[i]){
+          Serial.println("RCounter changed during sweep. This is not yet supported. Execution halted");
+   
+           // Halt execution with infinite pause
+           while(true){
+             delay(1);
+           }
+    }
+     if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
+    Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
+    
+           // Halt execution with infinite pause
+           while(true){
+             delay(1);
+           }
+    }
   }
-  
+
   // Start the SPI library
   SPI.begin();
   // Set the bit order
@@ -202,7 +229,7 @@ void setup() {
   SPI.setClockDivider(SPI_CLOCK_DIV2);
   
   // Wait just a bit
-  delayer(SWEEP_PAUSE, DELAY_IS_MICROSECONDS);
+  delayer(SWEEP_PAUSE);
   
   // Send 3 bytes of Function Latch Data. This is the same each time
   // So we only send it once during setup
@@ -215,7 +242,7 @@ void setup() {
   delayMicroseconds(PULSE_DURATION);
   PORTD = B00000000;
  
-  delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
+  delayer(DWELL_TIME-PULSE_DURATION);
  
   // Send 3 bytes of R Latch Data. This is the same each time
   // So we only send it once during setup
@@ -228,18 +255,8 @@ void setup() {
   delayMicroseconds(PULSE_DURATION);
   PORTD = B00000000;
  
-  delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
+  delayer(DWELL_TIME-PULSE_DURATION);
 }
-
-//############################################################
-// POPULATE THE RCOUNTER
-//############################################################
-
-/*long calcRCounter(float REFin, float PFDFreq){
-  int R = (int)(REFin*1000/PFDFreq);
-  byte Testmodes = (byte)1;
-  return ( pow(2,23)+pow(2, 20) + Testmodes*pow(2,16) + (R & 0x3FFF) * pow(2,2) );
- }*/
 
 //############################################################
 // POPULATE THE REGISTER ARRAY
@@ -317,12 +334,17 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox, int i
   // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
   N1[i] = (byte)lowByte((long)Reg[1] >> 8);
   
-  // If this is the first iteration, the R Latch should be set
+  // If this is the first iteration, the RCounter and Function Latch should be set
   if( i == 0){
      R0 = (byte)(lowByte((long)Reg[0])); // The LSB of the R Latch
-     R1 = (byte)(lowByte((long)Reg[0] >> 8)); // The middle byte of the R LAtch
+     R1 = (byte)(lowByte((long)Reg[0] >> 8)); // The middle byte of the R Latch
      R2 = (byte)(lowByte((long)Reg[0] >> 16)); // The MSB of the R Latch
+
+     F0 = (byte)(lowByte((long)Reg[2])); // The LSB of the Function Latch
+     F1 = (byte)(lowByte((long)Reg[2] >> 8)); // The middle byte of the Function Latch
+     F2 = (byte)(lowByte((long)Reg[2] >> 16)); // The MSB of the Function Latch
   }
+  
   
   // R0A is the low byte of the R Latch
   R0A[i] = (byte)(lowByte((long)Reg[0]));
@@ -336,13 +358,14 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox, int i
 }
   
 //############################################################
-// DELAY FUNCTION TO AVOID INT MAX
+// DELAY FUNCTION
 //############################################################
 
-void delayer(int delval, boolean ifDelay){
-    if( ifDelay){
-      delay(delval);
+void delayer(int delval ){
+    if( DO_LONG_DELAY){
+      delay(LONG_DELAY);
     }  
+    delayMicroseconds(delval);
 }
 
 //############################################################
@@ -369,7 +392,7 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
   // After one byte transmission, set both LE and SI back low
   PORTD = B00000000;
   
-delayer(DWELL_TIME, DELAY_IS_MICROSECONDS);
+  delayer(DWELL_TIME-PULSE_DURATION);
 }
 
 //############################################################
@@ -387,5 +410,5 @@ void loop() {
   }
   
   SPIwrite24bitRegister(N2, N1[0], N0[0], false);
-  delayer(SWEEP_PAUSE, DELAY_IS_MICROSECONDS);
+  delayer(SWEEP_PAUSE);
 }
