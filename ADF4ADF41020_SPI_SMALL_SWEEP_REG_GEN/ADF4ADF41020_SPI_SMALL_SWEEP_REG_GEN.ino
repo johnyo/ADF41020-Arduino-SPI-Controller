@@ -206,8 +206,8 @@ void setup() {
              delay(1);
            }
     }
-     if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
-    Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
+        if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
+           Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
     
            // Halt execution with infinite pause
            while(true){
@@ -344,7 +344,6 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox, int i
      F1 = (byte)(lowByte((long)Reg[2] >> 8)); // The middle byte of the Function Latch
      F2 = (byte)(lowByte((long)Reg[2] >> 16)); // The MSB of the Function Latch
   }
-  
   
   // R0A is the low byte of the R Latch
   R0A[i] = (byte)(lowByte((long)Reg[0]));
