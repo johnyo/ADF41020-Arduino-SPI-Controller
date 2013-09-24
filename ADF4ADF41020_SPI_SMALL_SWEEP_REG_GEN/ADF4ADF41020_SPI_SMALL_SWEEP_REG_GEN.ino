@@ -1,6 +1,18 @@
 #include <SoftwareSerial.h>
 
 //############################################################
+// To Do / Roadmap
+//############################################################
+/*
+CURRENT VERSION: Implementing serial interface with Matlab for
+communication of frequency vector. (Serial.available in loop)
+
+NEXT VERSION: Add support for 3-bit ADC for control signals
+
+FUTURE VERSIONs:replace Serial.available in loop by interrupt
+*/
+
+//############################################################
 // SPI Serial Interface for the ADF41020
 //############################################################
 /*
