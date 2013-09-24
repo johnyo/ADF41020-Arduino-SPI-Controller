@@ -271,6 +271,24 @@ void setup() {
 }
 
 //############################################################
+// READ IN SERIAL DATA FROM MATLAB
+//############################################################
+
+String parseSerial(){
+  char inChar=-1; // Where to store the character read
+  byte index = 0; // Index into loop; where to store the character
+  String command; // String of the command red in from serial
+  
+  // If there is serial data available, read it in
+  if(Serial.available() > 0) {
+            inChar = Serial.read(); // Read a character
+            command+=inChar; // Store it
+            index++; // Increment where to write next
+  }
+  
+}
+
+//############################################################
 // POPULATE THE REGISTER ARRAY
 //############################################################
 
