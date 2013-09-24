@@ -281,9 +281,9 @@ String parseSerial(){
   
   // If there is serial data available, read it in
   if(Serial.available() > 0) {
-            inChar = Serial.read(); // Read a character
-            command+=inChar; // Store it
-            index++; // Increment where to write next
+     inChar = Serial.read(); // Read a character
+     command+=inChar; // Store it
+     index++; // Increment where to write next
   }
   
 }
