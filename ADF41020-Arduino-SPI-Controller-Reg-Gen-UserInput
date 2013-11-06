@@ -69,8 +69,6 @@ for external syncing purposes.
 // PFD Frequency in MHz
 #define PFDFrequency 1250
 
-int inputVec [10] = {};
-
 // Vector of frequencies in MHz
 int freqVec [] = {
 10415,
@@ -134,6 +132,10 @@ int freqVec [] = {
 13025,
 13070,
 };
+
+int inputVec [100] = {}; // the vector inputed by the user for manipulation
+
+int zeroIndex = sizeof(freqVec)/sizeof(int); // Serves as a cut off point for iteration
 
 //############################################################
 // N Counter Arrays
@@ -220,14 +222,14 @@ void setup() {
              delay(1);
            }
     }
-//        if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
-//           Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
-//    
-//          // Halt execution with infinite pause
-//          while(true){
-//            delay(1);
-//          }
-//    }
+       if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
+         Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
+  
+         // Halt execution with infinite pause
+         while(true){
+           delay(1);
+         }
+    }
   }
 
   // Start the SPI library
@@ -506,8 +508,26 @@ void loop() {
   if(serialString.length()!=0){ // check in the command string has been populated
      command = ParseUserInput(serialString); // read in the command for use in a case tree    
     // Note that this also populates the inputVec in the header with whatever has been entered
+    
     if(command == "fizz"){
        fizz(command);
+    }    
+    else if(command == "FREQ"){ // To change the frequency Vector
+      
+      //Iterate through the input vector to find where it stops
+      
+      for(int h = 0; h<sizeof(inputVec)/sizeof(int); h++){
+        if(inputVec[h] == 0){
+          zeroIndex = h;
+        }
+      }
+      
+      // Overwrite the variables in the frequency vector
+   
+      for(int g = 0; g <zeroIndex; g++){
+        freqVec[g] = inputVec[g];
+      }      
+      
     }
     else if(command == "buzz"){
        buzz(command);
