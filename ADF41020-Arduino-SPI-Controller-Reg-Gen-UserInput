@@ -1,5 +1,4 @@
 #include <SoftwareSerial.h>
-
 //############################################################
 // To Do / Roadmap
 //############################################################
@@ -59,6 +58,9 @@ for external syncing purposes.
 #define DO_LONG_DELAY false
 // if true, then LONG_DELAY is added to DWELL_TIME and SWEEP_PAUSE
 
+
+#define TerminalCharacter '\n'
+
 //############################################################
 // PRECALCULATED SPI DATA //
 //############################################################
@@ -69,83 +71,36 @@ for external syncing purposes.
 // PFD Frequency in MHz
 #define PFDFrequency 1250
 
+// Define the maximum length of a possible vector
+// Making this a larger number can cause the program
+// to crash as it takes up too much memory
+#define MaxLength 60
+
+// Initialize command from user
+String userCommand = "";
+
+// Initialize number of values input by user
+
+int numValues = 0;
+
 // Vector of frequencies in MHz
-int freqVec [] = {
-10415,
-10460,
-10505,
-10550,
-10595,
-10640,
-10685,
-10730,
-10775,
-10820,
-10865,
-10910,
-10955,
-11000,
-11045,
-11090,
-11135,
-11180,
-11225,
-11270,
-11315,
-11360,
-11405,
-11450,
-11495,
-11540,
-11585,
-11630,
-11675,
-11720,
-11765,
-11810,
-11855,
-11900,
-11945,
-11990,
-12035,
-12080,
-12125,
-12170,
-12215,
-12260,
-12305,
-12350,
-12395,
-12440,
-12485,
-12530,
-12575,
-12620,
-12665,
-12710,
-12755,
-12800,
-12845,
-12890,
-12935,
-12980,
-13025,
-13070,
-};
+int freqVec [MaxLength] = {};
 
-int inputVec [100] = {}; // the vector inputed by the user for manipulation
+int inputVec [MaxLength] = {}; // the vector inputed by the user for manipulation
 
-int zeroIndex = sizeof(freqVec)/sizeof(int); // Serves as a cut off point for iteration
+int defaultFreqVec [] = {10415,10460,10505,10550,10595,10640,10685,10730,10775,10820,10865,10910,10955,11000,11045,11090,11135,11180,11225,11270,11315,11360,11405,11450,11495,11540,11585,11630,11675,11720,11765,11810,11855,11900,11945,11990,12035,12080,12125,12170,12215,12260,12305,12350,12395,12440,12485,12530,12575,12620,12665,12710,12755,12800,12845,12890,12935,12980,13025,13070};
+
+int numFreqs = 0; // Serves as a cut off point for iteration
 
 //############################################################
 // N Counter Arrays
 //############################################################
 
 // Least significant byte of N Counter to be populated by CalcRegisters
-byte N0 [sizeof(freqVec)/sizeof(int)] = {};
+byte N0 [MaxLength] = {};
 
 // Middle Byte of N Counter to be populated by CalcRegisters
-byte N1 [sizeof(freqVec)/sizeof(int)] = {};
+byte N1 [MaxLength] = {};
 
 // Precalculated byte arrays for N Counter, this is always 0x00
 byte N2 = 0x00; // MSBs
@@ -163,13 +118,13 @@ byte R1;
 byte R0; // LSBs
 
 // Least significant byte of the R Latch to be populated by CalcRegisters
-byte R0A [sizeof(freqVec)/sizeof(int)] = {};
+byte R0A [MaxLength] = {};
 
 // Middle Byte of R Latch to be populated by CalcRegisters
-byte R1A [sizeof(freqVec)/sizeof(int)] = {};
+byte R1A [MaxLength] = {};
 
 // Most significant byte of R Latch to be populated by CalcRegisters
-byte R2A [sizeof(freqVec)/sizeof(int)] = {};
+byte R2A [MaxLength] = {};
 
 //#############################################################
 // Function Latch Arrays
@@ -184,13 +139,13 @@ byte F1;
 byte F0;// LSBs
 
 // Least significant byte of the Function Latch to be populated by CalcRegisters
-byte F0A [sizeof(freqVec)/sizeof(int)] = {};
+byte F0A [MaxLength] = {};
 
 // Middle Byte of Function Latch to be populated by CalcRegisters
-byte F1A [sizeof(freqVec)/sizeof(int)] = {};
+byte F1A [MaxLength] = {};
 
 // Most significant byte of Function Latch to be populated by CalcRegisters
-byte F2A [sizeof(freqVec)/sizeof(int)] = {};
+byte F2A [MaxLength] = {};
 
 //############################################################
 // SETUP //
@@ -198,6 +153,8 @@ byte F2A [sizeof(freqVec)/sizeof(int)] = {};
 // Setup function, only run at the beginning
 
 void setup() {
+  
+  // This populates the frequency vector
   
   // Set pints 6 and 7 as outputs without changing the values
   // of any other pins.
@@ -211,27 +168,6 @@ void setup() {
   // Initialize Serial Port for debugging
   Serial.begin(9600);
   
-  // Populate the NCounter and R Latch arrays
-  for(int i =0; i< sizeof(freqVec)/sizeof(int); i++){ 
-    calcRegisters(freqVec[i], RFInputFrequency, PFDFrequency, i);
-        if(R0 != R0A[i] || R1 != R1A[i] || R2 != R2A[i]){
-          Serial.println("RCounter changed during sweep. This is not yet supported. Execution halted");
-   
-           // Halt execution with infinite pause
-           while(true){
-             delay(1);
-           }
-    }
-       if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
-         Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
-  
-         // Halt execution with infinite pause
-         while(true){
-           delay(1);
-         }
-    }
-  }
-
   // Start the SPI library
   SPI.begin();
   // Set the bit order
@@ -243,6 +179,8 @@ void setup() {
   // Set the speed we want to transmit at. This divides
   // the 16 MHz system clock. Default is divide by 4.
   SPI.setClockDivider(SPI_CLOCK_DIV2);
+ 
+  changeFreqVec(defaultFreqVec, sizeof(defaultFreqVec)/sizeof(int));
   
   // Wait just a bit
   delayer(SWEEP_PAUSE);
@@ -275,6 +213,42 @@ void setup() {
 }
 
 //############################################################
+// Populate Frequency Vector
+//############################################################
+
+void changeFreqVec(int array [], int length){
+  
+  
+  for(int j = 0 ; j < length ; j++){
+    freqVec[j] = array[j];
+  }
+  
+  numFreqs = length;
+  
+  // Populate the NCounter and R Latch arrays
+  for(int i =0; i< numFreqs; i++){ 
+    calcRegisters(freqVec[i], RFInputFrequency, PFDFrequency, i);
+    if(R0 != R0A[i] || R1 != R1A[i] || R2 != R2A[i]){
+          Serial.println("RCounter changed during sweep. This is not yet supported. Execution halted");
+           
+           // Halt execution with infinite pause
+           while(true){
+             delay(1);
+           }
+    }
+     if(F0 != F0A[i] || F1 != F1A[i] || F2 != F2A[i]){
+         Serial.println("Function Latch changed during sweep. This is not yet supported. Execution halted");
+         
+         // Halt execution with infinite pause
+         while(true){
+           delay(1);
+         }
+    }
+  }
+
+}
+
+//############################################################
 // READ IN SERIAL DATA FROM MATLAB
 //############################################################
 
@@ -284,12 +258,32 @@ String parseSerial(){
   String command; // String of the command red in from serial
   
   // If there is serial data available, read it in
-  if(Serial.available() > 0) {
+  
+  int time1 = millis(); // set time1 to the initial time before reading serial data
+  int time2 = time1;
+  
+  while(true){
+    if(Serial.available() > 0) {
             inChar = Serial.read(); // Read a character
+            if(inChar == TerminalCharacter){
+              break;
+            }
             command+=inChar; // Store it
             index++; // Increment where to write next
+    }
+    
+    time2 = millis(); // set time2 to current time
+    
+    if(time2-time1>10000){ // check if time has surpassed 10 seconds
+      command = ""; // return an empty string
+    }
+
   }
   
+  Serial.print(command);
+  Serial.print(TerminalCharacter);
+  return command;
+ 
 }
 
 //############################################################
@@ -387,6 +381,15 @@ void calcRegisters(float RFOutFreqBox, float RefFreqBox, float PFDFreqBox, int i
   
   // R1A is the high byte of the R Latch
   R2A[i] = (byte)(lowByte((long)Reg[0] >> 16));
+  
+  // F0A is the low byte of the function latch
+  F0A[i] = (byte)(lowByte((long)Reg[2]));
+  
+  // F1A is the middle byte of the function latch
+  F1A[i] = (byte)(lowByte((long)Reg[2] >> 8));
+  
+  // F2A is the high byte of the function latch
+  F2A[i] = (byte)(lowByte((long)Reg[2] >> 16));
     
 }
   
@@ -427,45 +430,62 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
   
   delayer(DWELL_TIME-PULSE_DURATION);
 }
-
 //############################################################
 // Parse Data from User Input //
 //############################################################
 
-String ParseUserInput(String command){
-  
-     char charBuf[command.length()];
-     command.toCharArray(charBuf, command.length());
-     String ToDo = "";
-     String intval = "";
+void ParseUserInput(String in){ 
+     char a = in.charAt(1);
      int index = 0;
+     String s = "";
+     char buffcomm[30];
+   
      
-     for(int i = 0; i < sizeof(charBuf)/sizeof(char); i++){
-       index = i;
-       
-       if(charBuf[i]!=':')
-         ToDo += charBuf[i];
-       else
-         break;
-         
-     }
-     
-     int freqCounter = 0;
-     
-     for(int j = index+2; j <sizeof(charBuf)/sizeof(char); j++){
-       
-       if(charBuf[j]!=',')
-         intval += charBuf[j];
-       else{
-         inputVec[freqCounter] = intval.toInt();
-         Serial.println(inputVec[freqCounter]);
-         freqCounter +=1;
-         intval = "";
+     for( int i = 0; i < in.length(); i++){
+       index++;
+       if(in.charAt(i)!= ' '){
+         buffcomm[i] = in.charAt(i);
        }
-       
+       else{
+         break;
+       }
      }
      
-     return ToDo;
+     userCommand = buffcomm;
+     Serial.println(userCommand.substring(0, index-1));
+
+    
+     String val = "";
+     numValues = 0;
+     int buffindex = 0;
+     char buffval[30];
+     
+     
+   for(int j = index; j < in.length(); j++){
+       
+         buffval[buffindex] = in.charAt(j);
+         buffindex++;
+       
+   }
+   
+   for(int k = 0; k<buffindex; k++){
+     s+=buffval[k];
+   }
+   
+   String num = "";
+   
+   for( int p = 0; p<=s.length(); p++){
+      if(p==s.length())
+         num =  s;
+      else
+         num = s.substring(0,s.indexOf(','));
+         
+      Serial.println(num);
+      s=s.substring(s.indexOf(',')+1);
+   }
+   int vecIndex = 0;
+     
+     
      
 }
 
@@ -493,54 +513,63 @@ void buzz(String command){
 }
 
 //############################################################
+//  Decode the command string 
+//############################################################
+
+void DecodeCommand(){
+  
+    if(userCommand == ""){
+       fizz(userCommand);
+    }    
+    else if(userCommand=="FREQ"){//overwrite frequency vector
+       changeFreqVec(inputVec, numValues);
+    }
+    else if(userCommand == "buzz"){
+       buzz(userCommand);
+    }
+    else{
+       Serial.println("Unrecognized Command");
+    }
+  
+}
+
+//############################################################
+// Send feedback over serial
+//############################################################
+void sendFeedback(){
+  
+  // First send the command, followed by the values in the input array
+  // in the format "command val1,val2,val3,val4..."
+  Serial.print(userCommand);
+  
+  Serial.print(" ");
+  
+  for(int k = 0; k = sizeof(inputVec)/sizeof(int); k++){
+     Serial.print(inputVec[k]);
+  }
+  
+  Serial.print(TerminalCharacter);
+}
+
+//############################################################
 // MAIN LOOP //
 //############################################################
 void loop() {
   
   String serialString = "";
-  String command = "";
   // Check to see if any commands have been entered through the MATLAB terminal
-  while(Serial.available()>0) {// if there is data to read
-    int matlabData=Serial.read(); // read data 
-    serialString += char(matlabData);  
-  }
-  
-  if(serialString.length()!=0){ // check in the command string has been populated
-     command = ParseUserInput(serialString); // read in the command for use in a case tree    
-    // Note that this also populates the inputVec in the header with whatever has been entered
-    
-    if(command == "fizz"){
-       fizz(command);
-    }    
-    else if(command == "FREQ"){ // To change the frequency Vector
-      
-      //Iterate through the input vector to find where it stops
-      
-      for(int h = 0; h<sizeof(inputVec)/sizeof(int); h++){
-        if(inputVec[h] == 0){
-          zeroIndex = h;
-        }
-      }
-      
-      // Overwrite the variables in the frequency vector
-   
-      for(int g = 0; g <zeroIndex; g++){
-        freqVec[g] = inputVec[g];
-      }      
-      
-    }
-    else if(command == "buzz"){
-       buzz(command);
-    }
-    else{
-       Serial.println("Unrecognized Command");
-    }
-  }
-  
-  
 
+  if(Serial.available()>0) {// if there is data to read
+    serialString = parseSerial();
+    if(serialString != ""){
+      ParseUserInput(serialString);
+      DecodeCommand();
+      sendFeedback();
+    }
+  }
+  
   // Loop for the number of values in our frequency sweep
-  for(int i = 0; i < sizeof(N0); i++) {
+  for(int i = 0; i < numFreqs; i++) {
    
     if(i==0)
         SPIwrite24bitRegister(N2, N1[i], N0[i],true);
