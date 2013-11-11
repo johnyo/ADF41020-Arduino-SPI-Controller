@@ -31,11 +31,35 @@
 #define SYNC_SIGNAL_STARTSTEP 256 // start of step
 #define SYNC_SIGNAL_RESET 0 // default
 
-/* SWEEP TIMING (APPROXIMATE) */
+/* SWEEP  */
+/*    basics (other PLL config parameters can be found in pll_adf40120_freq2regval()) */
+#define MAX_NUM_FREQ 201 // maximum number of frequencies
+#define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
+/*    timing parameters (approximate; plus execution time) */
 #define PULSE_DURATION 100 // sync signaling pulse duration in microseconds (must be smaller than DWELL_TIME)
 #define DWELL_TIME 1000 // dwell time at each step in microseconds
 #define SWEEP_PAUSE 2500  // pause between sweeps in microseconds
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
+
+/* SERIAL INTERFACE */
+#define SERIAL_INBUFSIZE 101 // bytes serial input buffer 
+
+/* GLOBAL VARIABLES */
+/*    frequency sweep / PLL control */
+int PFDFrequency 1250 // PFD Frequency in MHz ("channel spacing")
+int num_freq = 0; // actual number of frequencies
+byte F2 = 0; // PLL 24-bit function register, [F2,F1,F0]
+byte F1 = 0; // PLL 24-bit function register, [F2,F1,F0]
+byte F0 = 0; // PLL 24-bit function register, [F2,F1,F0]
+byte R2 = 0b10010001; // PLL 24-bit R counter, [R2,R1,R0] (fixed/reserved)
+byte R1[MAX_NUM_FREQ] = {}; // PLL 14-bit R counter, [R2,R1,R0]
+byte R0[MAX_NUM_FREQ] = {}; // PLL 14-bit R counter, [R2,R1,R0]
+byte N2[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
+byte N1[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
+byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
+/*    serial interace */
+int serial_inputbuffer[SERIAL_INBUFSIZE] = {};
+
 
 
 
@@ -121,18 +145,129 @@ void loop() {
 }
 
 
+
+//############################################################
+// FREQUENCY SWEEP FUNCTIONS
+//############################################################
+// populate frequency vector; linear sweep
+void set_linear_sweep(int fstart, int fstep, int fstop) {
+  // reset number of frequency values
+  num_freq = 0;
+  // populate frequency vector (PLL register values)
+  for (int curr_freq = fstart; curr_freq <= fstop; curr_freq += fstep) {
+    pll_adf40120_addfrequency(curr_freq, num_freq);
+    num_freq++;
+  } 
+}
+// add another frequency step to the sweep
+void add_sweep_frequency(int freq) {
+  pll_adf40120_addfrequency(freq, num_freq);
+  num_freq++;
+}
+// reset sweep
+void reset_sweep() {
+  num_freq = 0;
+}
+
+
+//############################################################
+// SERIAL CONTROL INTERFACE
+//############################################################
+
+
+
 //############################################################
 // SPECIALIZED DEVICE CONTROL FUNCTIONS
 //############################################################
 // sends a pulse signal on the sync/handshake line (DAC)
 void pulse_sync_signal(int signal) {
-// change the state to SIGNAL
-spi_dac_mcp4811(signal);
-// wait for pre-defined pulse duration
-delayMicroseconds(PULSE_DURATION);
-// reset the state
-spi_dac_mcp4811(SYNC_SIGNAL_RESET);
+  // change the state to SIGNAL
+  spi_dac_mcp4811(signal);
+  // wait for pre-defined pulse duration
+  delayMicroseconds(PULSE_DURATION);
+  // reset the state
+  spi_dac_mcp4811(SYNC_SIGNAL_RESET);
 }  
+// calculate function register value F (global), R-, and N-counter values (returned [R, N]) for ADF41020 PLL
+// (copied and modified from ADF41020 host software)
+// TODO: IMPLEMENT
+void pll_adf40120_freq2regval(int RFout, int i) {
+
+  // device configuration 
+  int  Prescaler = 1; // prescaler setting (16/17)
+  byte CPsetting1 = 3; // charge pump 1 setting
+  byte CPsetting2 = 3; // charge pump 2 setting
+  byte CPGain = 0; // charge pump gain
+  byte CP3state = 0;
+  byte Fastlock = 0;
+  byte Timeout = 0;
+  byte PDPolarity = 0;
+  byte CounterReset = 0;
+  byte LDP = 0; // lock detect precision
+  byte Powerdown = 0;
+  byte ABPW = 0;
+  byte Sync = 0;
+  byte Delay = 0;
+  byte Muxout = 0;
+  byte Testmodes = 1;
+
+  // calculate P, R, N, B, & A values for calculating register
+  int P = pow2(Prescaler) << 3;
+  int R = REFin * 1000 / PFDFreq); // kHz -> Hz
+  int N = RFout *  250 / PFDFreq); // kHz -> Hz plus /4 for channel spacing
+  int B = N / P;
+  int A = N - (B * P);
+ 
+  // modify fastlock and powerdown settings
+  if (Fastlock==2) Fastlock++;
+  if (Powerdown==2) Powerdown++;
+  
+  // calculate register values
+  //    R-counter (23-16: fixed,  15-2: R-Counter,  1-0: 00)
+  //    N-counter (23-22: 00, 21: CP gain,  20-8: B-Counter,  7-2: A-Counter,  1-0: 01)
+  //    Function latch
+  
+   
+  // Calculate the register values
+  Reg[0] = ( pow2(23) + pow2(20) + Testmodes*pow2(16) + (R & 0x3FFF) * pow2(2) );
+  Reg[1] = ( CPGain*pow2(21) + (B&0x1FFF)*pow2(8) + (A&0x3F)*pow2(2) + 1);
+  Reg[2] = ( Prescaler*pow2(22) + CPsetting2*pow2(18) + CPsetting1*pow2(15) + 
+             Timeout*pow2(11) + Fastlock*pow2(9) + CP3state*pow2(8) + 
+             PDPolarity*pow2(7) + Muxout * pow2(4) + Powerdown*pow2(3) + CounterReset*pow2(2) + 2);
+  
+  // N0 is the low byte
+  N0[i] = (byte)lowByte((long)Reg[1]);
+    
+  // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
+  N1[i] = (byte)lowByte((long)Reg[1] >> 8);
+  
+  // If this is the first iteration, the RCounter and Function Latch should be set
+  if( i == 0){
+     R0 = (byte)(lowByte((long)Reg[0])); // The LSB of the R Latch
+     R1 = (byte)(lowByte((long)Reg[0] >> 8)); // The middle byte of the R Latch
+     R2 = (byte)(lowByte((long)Reg[0] >> 16)); // The MSB of the R Latch
+
+     F0 = (byte)(lowByte((long)Reg[2])); // The LSB of the Function Latch
+     F1 = (byte)(lowByte((long)Reg[2] >> 8)); // The middle byte of the Function Latch
+     F2 = (byte)(lowByte((long)Reg[2] >> 16)); // The MSB of the Function Latch
+  }
+  
+  // R0A is the low byte of the R Latch
+  R0A[i] = (byte)(lowByte((long)Reg[0]));
+  
+  // R1A is the middle byte of the R Latch
+  R1A[i] = (byte)(lowByte((long)Reg[0] >> 8));
+  
+  // R1A is the high byte of the R Latch
+  R2A[i] = (byte)(lowByte((long)Reg[0] >> 16));
+    
+}
+
+
+// fast implementation for "power of two"
+int pow2(byte value){
+  return (int 1 << value)
+}
 
 
 
@@ -193,8 +328,6 @@ void spi_drv_tle723x_set(byte *state, size_t num_dev) {
   // reset active low chip enable
   PORTD = PORTD | SPI_CE_MASK_DRV;
 }
-
-
 
 
 //############################################################
