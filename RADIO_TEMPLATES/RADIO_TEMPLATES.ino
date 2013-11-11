@@ -2,8 +2,7 @@
 /* Purpose of this program is to create templates & code that can later be merged with the other sweep/radio control */
 /* Author: Daniel Arnitz */
 
-/* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller. */
-
+/* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller, Serial command interface. */
 
 // Libraries
 #include <SPI.h>
@@ -31,6 +30,12 @@
 #define SYNC_SIGNAL_STARTSTEP 256 // start of step
 #define SYNC_SIGNAL_RESET 0 // default
 
+/* SERIAL COMMAND INTERFACE */
+#define SERIAL_EOL '\n' // end-of-line terminator for serial interface
+#define SERIAL_SEP_C2V ' ' // separator between command and value(s)
+#define SERIAL_SEP_V2V ',' // separator between two values
+#define SERIAL_INBUF_SIZE 1001 // bytes serial input buffer
+
 /* SWEEP  */
 /*    basics (other PLL config parameters can be found in pll_adf40120_freq2regval()) */
 #define MAX_NUM_FREQ 201 // maximum number of frequencies
@@ -41,13 +46,15 @@
 #define SWEEP_PAUSE 2500  // pause between sweeps in microseconds
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
 
-/* SERIAL INTERFACE */
-#define SERIAL_INBUFSIZE 101 // bytes serial input buffer 
+/* HANDSHAKE / ERRORS */
+#define HALT_IF_ERROR false // stop execution in case of errors
+#define SERIAL_HANDSHAKE_OK "OK -- " // prefix for "OK"
+#define SERIAL_HANDSHAKE_ERR "ERROR -- " // prefix for "error"
 
 /* GLOBAL VARIABLES */
 /*    frequency sweep / PLL control */
-int PFDFrequency 1250 // PFD Frequency in MHz ("channel spacing")
-int num_freq = 0; // actual number of frequencies
+long PFDFreq = 1250; // PFD Frequency in MHz ("channel spacing")
+int  num_freq = 0; // actual number of frequencies
 byte F2 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F1 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F0 = 0; // PLL 24-bit function register, [F2,F1,F0]
@@ -57,9 +64,11 @@ byte R0[MAX_NUM_FREQ] = {}; // PLL 14-bit R counter, [R2,R1,R0]
 byte N2[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N1[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
-/*    serial interace */
-int serial_inputbuffer[SERIAL_INBUFSIZE] = {};
-
+/*    serial command interace */
+String  serial_cmd = ""; //
+int     serial_val = 0; // 
+String  serial_inbuf = "";  // serial input buffer (CMD VAL1,VAL2,...)
+boolean serial_inbuf_complete = false; // command complete (EOL reached)?
 
 
 
@@ -70,6 +79,10 @@ void setup() {
   
   // Initialize serial port (debugging and control)
   Serial.begin(9600);
+  // Reserve memory for serial input string buffer
+  serial_inbuf.reserve(SERIAL_INBUF_SIZE);
+  // Reset command interface
+  serial_reset_cmd_interface();
   
   // Initialize digital outputs
   //    Define outputs on port D
@@ -86,7 +99,10 @@ void setup() {
   //   Set the speed we want to transmit at. This divides
   //   the 16 MHz system clock. Default is divide by 4.
   SPI.setClockDivider(SPI_CLOCK_DEFAULT);
- 
+  
+  // Initialize PLL
+  //Serial.println("--------------------------------------------------------");
+  //pll_set_linear_sweep(10415, 45, 13070);
 }
 
 
@@ -95,7 +111,19 @@ void setup() {
 //############################################################
 void loop() {
   
+  /* SERIAL CONTROL INTERFACE */
+  //    get serial data
+  if (Serial.available() > 0){
+    serial_input();
+  }
+  //    if command is complete: parse
+  if (serial_inbuf_complete){
+    // decode command and reset interface
+    serial_command_decode();
+  }
+  
   /* SWITCH CONTROL */
+  /*
   // initial state of all switches in the chain
   byte switch_states[] = {0, 0, 0}; 
   // set initial state
@@ -114,6 +142,7 @@ void loop() {
     // wait [ms]
     delay(LONG_PAUSE);
   }
+  */
   
   /* PLL CONTROL, 101-point sweep */
   /*
@@ -150,22 +179,22 @@ void loop() {
 // FREQUENCY SWEEP FUNCTIONS
 //############################################################
 // populate frequency vector; linear sweep
-void set_linear_sweep(int fstart, int fstep, int fstop) {
+void pll_set_linear_sweep(int fstart, int fstep, int fstop) {
   // reset number of frequency values
   num_freq = 0;
   // populate frequency vector (PLL register values)
   for (int curr_freq = fstart; curr_freq <= fstop; curr_freq += fstep) {
-    pll_adf40120_addfrequency(curr_freq, num_freq);
+    pll_adf40120_addfreq(curr_freq, num_freq);
     num_freq++;
   } 
 }
 // add another frequency step to the sweep
-void add_sweep_frequency(int freq) {
-  pll_adf40120_addfrequency(freq, num_freq);
+void pll_add_sweep_frequency(int freq) {
+  pll_adf40120_addfreq(freq, num_freq);
   num_freq++;
 }
 // reset sweep
-void reset_sweep() {
+void pll_reset_sweep() {
   num_freq = 0;
 }
 
@@ -173,7 +202,150 @@ void reset_sweep() {
 //############################################################
 // SERIAL CONTROL INTERFACE
 //############################################################
-
+// parse string and return the next token (command string - whitespace - comma separated list of values)
+//    returns true if a new token was found; false if not
+void serial_command_decode() {
+  // get command from buffer
+  serial_parse_next_token();
+  serial_cmd.toUpperCase();
+  // decode command
+  //     update PFD frequency
+  if (serial_cmd == "PLL:PFD") { 
+    pll_reset_sweep(); // reset sweep (register values need to be recalculated)
+    serial_parse_next_token(); // get value from buffer
+    PFDFreq = serial_val; // update PFD frequency
+    // send feedback
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd);
+    Serial.print(" "); Serial.println(PFDFreq);
+  }
+  //     linear sweep [min:step:max]
+  else if (serial_cmd == "PLL:SWEEP:LIN") { 
+    pll_reset_sweep(); // reset sweep (register values need to be recalculated)
+    // get start, step, stop values from buffer
+    int fstart = 0;
+    int fstep = 0;
+    int fstop = 0;
+    if (serial_parse_next_token()) {
+      fstart = serial_val;
+    } else {
+      Serial.println("Start value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+    }
+    if (serial_parse_next_token()) {
+      fstep = serial_val;
+    } else {
+      Serial.println("Step value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+    }
+    if (serial_parse_next_token()) {
+      fstop = serial_val;
+    } else {
+      Serial.println("Stop value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+    }
+    // send feedback
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd);
+    Serial.print(" "); Serial.print(fstart); 
+    Serial.print(":"); Serial.print(fstep); 
+    Serial.print(":"); Serial.println(fstop);
+    // program sweep
+    pll_set_linear_sweep(fstart, fstep, fstop);
+  }
+  //     program new list sweep
+  else if (serial_cmd == "PLL:SWEEP:LIST") { 
+    pll_reset_sweep(); // reset old sweep
+    // send feedback
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
+    // update sweep
+    while (serial_parse_next_token()) { // while there are new values in the buffer ...
+      pll_add_sweep_frequency(serial_val); // ... add them to the sweep
+    }
+  }
+  //    get number of frequencies in sweep
+  else if (serial_cmd == "PLL:GET:NUM_FREQ") {
+    Serial.println(num_freq);
+  } 
+  //    get PLL PFD frequency value
+  else if (serial_cmd == "PLL:GET:PFD") {
+    Serial.println(PFDFreq);
+  } 
+  //    get PLL register values
+  else if (serial_cmd == "PLL:GET:REGVALS") {
+    for(int i = 0; i < num_freq; i++) {
+      Serial.print("|");
+      Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
+      Serial.print("|");
+      Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
+      Serial.print("|");
+      Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
+      Serial.println(" ");
+    }  
+  } 
+  //    unrecognized command; throw an error
+  else {
+    Serial.print(SERIAL_HANDSHAKE_ERR);
+    Serial.println("Unrecognized command \"" + serial_cmd + "\". Resetting command buffer.");
+  }
+  // reset command buffer
+  serial_reset_cmd_interface();
+}
+//############################################################
+// parse string and return the next token (command string - whitespace - comma separated list of values)
+//    returns true if a new token was found; false if not
+boolean serial_parse_next_token() {
+  // split index in string
+  int ind_sep = 0;
+  // check if buffer is already empty
+  if (serial_inbuf.length() == 0){
+    return false;
+  }
+  //Serial.println("------------------------------------");
+  //Serial.println("BUFFER: " + serial_inbuf);
+  // next token is a command
+  if (serial_cmd.length() == 0) {
+    ind_sep = serial_inbuf.indexOf(SERIAL_SEP_C2V); // find command-value separator
+    serial_cmd = serial_inbuf.substring(0,ind_sep); // -> command string
+    //Serial.println("COMMAND: " + serial_cmd);
+  }
+  // next token is a value (command already decoded)
+  else {
+    ind_sep = serial_inbuf.indexOf(SERIAL_SEP_V2V); // find value-value separator
+    if(ind_sep < 0){ // last value might not be terminated with SERIAL_SEP_V2V
+      ind_sep = serial_inbuf.length();
+    }
+    serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
+    //Serial.print("VALUE: "); Serial.println(serial_val);
+  }
+  // remove decoded token plus separator; get rid of any whitespaces
+  serial_inbuf = serial_inbuf.substring(ind_sep+1);
+  serial_inbuf.trim();
+  //Serial.println("REMAINING BUFFER: " + serial_inbuf);
+  return true;
+}
+//############################################################
+// write serial input to buffer (copied from SerialEvent example)
+void serial_input() {
+  while (Serial.available()) {
+    // get the new character
+    char inChar = (char)Serial.read(); 
+    // if the incoming character is the EOL character...
+    if (inChar == SERIAL_EOL) {
+      // make sure we don't have any trailing/leading whitespaces
+      serial_inbuf.trim();
+      // and set the completion flag
+      serial_inbuf_complete = true;
+    }
+    else
+    {
+      serial_inbuf += inChar; // otherwise, add the new character to the input buffer
+    } 
+  }
+}
+//############################################################
+// reset command interface
+void serial_reset_cmd_interface() {
+ serial_cmd   = "";
+ serial_val   = 0;
+ serial_inbuf = "";
+ serial_inbuf_complete = false;
+}
 
 
 //############################################################
@@ -190,33 +362,33 @@ void pulse_sync_signal(int signal) {
 }  
 // calculate function register value F (global), R-, and N-counter values (returned [R, N]) for ADF41020 PLL
 // (copied and modified from ADF41020 host software)
-// TODO: IMPLEMENT
-void pll_adf40120_freq2regval(int RFout, int i) {
-
-  // device configuration 
-  int  Prescaler = 1; // prescaler setting (16/17)
-  byte CPsetting1 = 3; // charge pump 1 setting
-  byte CPsetting2 = 3; // charge pump 2 setting
-  byte CPGain = 0; // charge pump gain
-  byte CP3state = 0;
-  byte Fastlock = 0;
-  byte Timeout = 0;
-  byte PDPolarity = 0;
-  byte CounterReset = 0;
-  byte LDP = 0; // lock detect precision
-  byte Powerdown = 0;
-  byte ABPW = 0;
-  byte Sync = 0;
-  byte Delay = 0;
-  byte Muxout = 0;
-  byte Testmodes = 1;
-
-  // calculate P, R, N, B, & A values for calculating register
-  int P = pow2(Prescaler) << 3;
-  int R = REFin * 1000 / PFDFreq); // kHz -> Hz
-  int N = RFout *  250 / PFDFreq); // kHz -> Hz plus /4 for channel spacing
-  int B = N / P;
-  int A = N - (B * P);
+// TODO: FIND OUT WHY SOME SETTINGS ARE UNUSED
+void pll_adf40120_addfreq(int RFout, int i) {
+  // device configuration; please refer to ADF41020 datasheet
+  int  Prescaler = 1; // prescaler value (00: 8/9, 16/17, 32/33, 11:64/65)
+  byte CPsetting1 = 3; // charge pump 1 setting (see manual)
+  byte CPsetting2 = 3; // charge pump 2 setting (see manual)
+  byte CPGain = 0; // charge pump gain (see manual)
+  byte CP3state = 0; // charge pump three-state (0: normal, 1: three-state)
+  byte Fastlock = 0; // fastlock setting (see manual)
+  byte Timeout = 0; // timeout (PFD cycles; 3,7,11,13 ...)
+  byte PDPolarity = 0; // phase detector polarity (0:neg, 1:pos)
+  byte CounterReset = 0; // 0: normal, 1: R,A,B held in reset
+  //byte LDP = 0; // lock detect precision (see manual)
+  byte Powerdown = 0; // power down (see manual)
+  //byte ABPW = 0;
+  //byte Sync = 0;
+  //byte Delay = 0; // 
+  byte Muxout = 0; // multiplexer output (see manual)
+  //byte Testmodes = 1;
+  
+  // calculate P, R, N, B, & A values for calculating register 
+  // (typecast to long for multiplication / division; multiplication first to avoid rounding errors)   
+  int  P = (1 << Prescaler) << 3; // 1 << x = 2^x, x << 3 = x * 8
+  int  R = (int)( ((long)PLL_RF_INPUT_FREQ * 1000) / PFDFreq ); // kHz -> Hz
+  int  N = (int)( ((long)RFout * 250) / PFDFreq ); // kHz -> Hz plus /4 for channel spacing
+  int  B = N / P;
+  byte A = (byte)( N - (B * P) );
  
   // modify fastlock and powerdown settings
   if (Fastlock==2) Fastlock++;
@@ -224,49 +396,28 @@ void pll_adf40120_freq2regval(int RFout, int i) {
   
   // calculate register values
   //    R-counter (23-16: fixed,  15-2: R-Counter,  1-0: 00)
+  R1[i] = (byte)(R >> 6);
+  R0[i] = (byte)(R << 2) | 0x0;
   //    N-counter (23-22: 00, 21: CP gain,  20-8: B-Counter,  7-2: A-Counter,  1-0: 01)
+  N2[i] = 0b00111111 & (CPGain << 5 | (byte)(B >> 8));
+  N1[i] = (byte)B;
+  N0[i] = ((A&0x3F) << 2) | 0x1;
   //    Function latch
+  F2 = (byte)( Prescaler << 6 | (Powerdown & 0x2) << 5 | CPsetting1 << 2 | CPsetting2 >> 1 );
+  F1 = (byte)( CPsetting2 << 7 | Timeout << 3 | Fastlock << 1 | CP3state);
+  F0 = (byte)( PDPolarity << 7 | Muxout << 4 | (Powerdown & 0x1) << 3 | CounterReset << 2) | 0x2;
   
-   
-  // Calculate the register values
-  Reg[0] = ( pow2(23) + pow2(20) + Testmodes*pow2(16) + (R & 0x3FFF) * pow2(2) );
-  Reg[1] = ( CPGain*pow2(21) + (B&0x1FFF)*pow2(8) + (A&0x3F)*pow2(2) + 1);
-  Reg[2] = ( Prescaler*pow2(22) + CPsetting2*pow2(18) + CPsetting1*pow2(15) + 
-             Timeout*pow2(11) + Fastlock*pow2(9) + CP3state*pow2(8) + 
-             PDPolarity*pow2(7) + Muxout * pow2(4) + Powerdown*pow2(3) + CounterReset*pow2(2) + 2);
-  
-  // N0 is the low byte
-  N0[i] = (byte)lowByte((long)Reg[1]);
-    
-  // Shift the value returned by calcRegisters by 8 bits to get the N1, middle byte
-  N1[i] = (byte)lowByte((long)Reg[1] >> 8);
-  
-  // If this is the first iteration, the RCounter and Function Latch should be set
-  if( i == 0){
-     R0 = (byte)(lowByte((long)Reg[0])); // The LSB of the R Latch
-     R1 = (byte)(lowByte((long)Reg[0] >> 8)); // The middle byte of the R Latch
-     R2 = (byte)(lowByte((long)Reg[0] >> 16)); // The MSB of the R Latch
-
-     F0 = (byte)(lowByte((long)Reg[2])); // The LSB of the Function Latch
-     F1 = (byte)(lowByte((long)Reg[2] >> 8)); // The middle byte of the Function Latch
-     F2 = (byte)(lowByte((long)Reg[2] >> 16)); // The MSB of the Function Latch
-  }
-  
-  // R0A is the low byte of the R Latch
-  R0A[i] = (byte)(lowByte((long)Reg[0]));
-  
-  // R1A is the middle byte of the R Latch
-  R1A[i] = (byte)(lowByte((long)Reg[0] >> 8));
-  
-  // R1A is the high byte of the R Latch
-  R2A[i] = (byte)(lowByte((long)Reg[0] >> 16));
-    
-}
-
-
-// fast implementation for "power of two"
-int pow2(byte value){
-  return (int 1 << value)
+  // Debug output
+  /*
+  Serial.print(RFout);
+  Serial.print("|");
+  Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
+  Serial.print("|");
+  Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
+  Serial.print("|");
+  Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
+  Serial.println(" ");
+  */
 }
 
 
