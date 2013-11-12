@@ -247,6 +247,10 @@ void run_panel_sweep() {
     // run sweep
     run_frequency_sweep();
   }
+  // give a "sweep terminated" signal
+  pulse_sync_signal(SYNC_SIGNAL_STARTMEAS);
+  // and reset switch chain
+  switch_chain_reset();
 }
 //############################################################
 // sweep: cycle through frequencies
@@ -394,6 +398,13 @@ void serial_command_decode() {
       pll_add_sweep_frequency(serial_val); // ... add them to the sweep
     }
   }
+  //    select specific switch port (ports # start at 1)
+  else if (serial_cmd == "SWITCH:SELECT") {
+    serial_parse_next_token(); // get value from buffer
+    switch_chain_selectfeed(serial_val); // switch on this feed
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+    Serial.println(serial_val);
+  } 
   //    get number of frequencies in sweep
   else if (serial_cmd == "GET:NUM_FREQ") {
     Serial.println(num_freq);
@@ -601,7 +612,22 @@ void switch_chain_next() {
   spi_drv_tle723x_set(switch_states, sizeof(switch_states));
 }
 //############################################################
-// debug: output switch states (binary)
+// select a specific port/feed (numbering starts at 1)
+void switch_chain_selectfeed(int feed) {
+  // reset switch chain
+  switch_chain_reset();
+  // calculate switch and port number
+  feed = feed - 1; // feed # starts at 1
+  byte sw = feed / SWITCH_NUM_PORTS; // integer division takes care of floor()
+  byte port = feed - sw * SWITCH_NUM_PORTS;
+  // change switch states
+  switch_states[sw] = 1 << port;
+  // program
+  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+}
+
+//############################################################
+// output switch states (binary)
 void switch_chain_output_states() {
    for(int i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
      Serial.print(switch_states[i], BIN); 
@@ -609,6 +635,7 @@ void switch_chain_output_states() {
    }
    Serial.println(switch_states[SWITCH_NUM_SWITCHES - 1], BIN);
 }
+
 
 
 //############################################################
