@@ -1,4 +1,5 @@
 #include <SoftwareSerial.h>
+
 //############################################################
 // To Do / Roadmap
 //############################################################
@@ -58,12 +59,12 @@ for external syncing purposes.
 #define DO_LONG_DELAY false
 // if true, then LONG_DELAY is added to DWELL_TIME and SWEEP_PAUSE
 
-
-#define TerminalCharacter '\n'
-
 //############################################################
 // PRECALCULATED SPI DATA //
 //############################################################
+
+// Character which will indicate a line ending
+#define TerminalCharacter '\n'
 
 // RF Input Frequency in MHz
 #define RFInputFrequency 100
@@ -80,17 +81,23 @@ for external syncing purposes.
 String userCommand = "";
 
 // Initialize number of values input by user
-
 int numValues = 0;
 
 // Vector of frequencies in MHz
 int freqVec [MaxLength] = {};
 
-int inputVec [MaxLength] = {}; // the vector inputed by the user for manipulation
+// the vector inputed by the user for manipulation
+int inputVec [MaxLength] = {};
 
-int defaultFreqVec [] = {10415,10460,10505,10550,10595,10640,10685,10730,10775,10820,10865,10910,10955,11000,11045,11090,11135,11180,11225,11270,11315,11360,11405,11450,11495,11540,11585,11630,11675,11720,11765,11810,11855,11900,11945,11990,12035,12080,12125,12170,12215,12260,12305,12350,12395,12440,12485,12530,12575,12620,12665,12710,12755,12800,12845,12890,12935,12980,13025,13070};
+// the default frequency vector for which the initial registers are calculated.
+int defaultFreqVec [] = {10415,10460,10505,10550,10595,10640,10685,10730,10775,
+10820,10865,10910,10955,11000,11045,11090,11135,11180,11225,11270,11315,11360,
+11405,11450,11495,11540,11585,11630,11675,11720,11765,11810,11855,11900,11945,
+11990,12035,12080,12125,12170,12215,12260,12305,12350,12395,12440,12485,12530,
+12575,12620,12665,12710,12755,12800,12845,12890,12935,12980,13025,13070};
 
-int numFreqs = 0; // Serves as a cut off point for iteration
+// Serves as a cut off point for iteration
+int numFreqs = 0; 
 
 //############################################################
 // N Counter Arrays
@@ -136,7 +143,7 @@ byte R2A [MaxLength] = {};
 // Function Latch bytes
 byte F2; // MSBs
 byte F1; 
-byte F0;// LSBs
+byte F0; // LSBs
 
 // Least significant byte of the Function Latch to be populated by CalcRegisters
 byte F0A [MaxLength] = {};
@@ -153,8 +160,6 @@ byte F2A [MaxLength] = {};
 // Setup function, only run at the beginning
 
 void setup() {
-  
-  // This populates the frequency vector
   
   // Set pints 6 and 7 as outputs without changing the values
   // of any other pins.
@@ -180,6 +185,7 @@ void setup() {
   // the 16 MHz system clock. Default is divide by 4.
   SPI.setClockDivider(SPI_CLOCK_DIV2);
  
+  // Calculates the register values based on the default frequency vector
   changeFreqVec(defaultFreqVec, sizeof(defaultFreqVec)/sizeof(int));
   
   // Wait just a bit
@@ -218,11 +224,12 @@ void setup() {
 
 void changeFreqVec(int array [], int length){
   
-  
+  // Copy over any array values passed in over to the frequency array
   for(int j = 0 ; j < length ; j++){
     freqVec[j] = array[j];
   }
   
+  // Set the number of indexes representing frequencies equal to the length passed in
   numFreqs = length;
   
   // Populate the NCounter and R Latch arrays
@@ -253,35 +260,25 @@ void changeFreqVec(int array [], int length){
 //############################################################
 
 String parseSerial(){
-  char inChar=-1; // Where to store the character read
-  byte index = 0; // Index into loop; where to store the character
+  
   String command; // String of the command red in from serial
-  
-  // If there is serial data available, read it in
-  
+  boolean stringComplete = false;
   int time1 = millis(); // set time1 to the initial time before reading serial data
-  int time2 = time1;
+  int time2 = time1; // set time2 to the initial time for the purpose of seeing the differance between time1 and time2
   
-  while(true){
-    if(Serial.available() > 0) {
-            inChar = Serial.read(); // Read a character
-            if(inChar == TerminalCharacter){
-              break;
-            }
+    while(Serial.available() && !stringComplete) { // while there is data available and we have not reached a terminal character
+            char inChar = (char)Serial.read(); // Read a character
             command+=inChar; // Store it
-            index++; // Increment where to write next
+            if(inChar == TerminalCharacter){
+              stringComplete = true; // The input has been read in in its entirety, so the loop exits
+            }
+            time2 = millis(); // set time2 to current time
+            if(time2-time1>10000){ // check if time has surpassed 10 seconds
+              command = ""; // return an empty string if it has taken more than 10 seconds to read the data
+            }
     }
     
-    time2 = millis(); // set time2 to current time
-    
-    if(time2-time1>10000){ // check if time has surpassed 10 seconds
-      command = ""; // return an empty string
-    }
-
-  }
-  
-  Serial.print(command);
-  Serial.print(TerminalCharacter);
+  command.trim(); // remove any trailing or begininning white space
   return command;
  
 }
@@ -435,81 +432,60 @@ void SPIwrite24bitRegister(byte b23to16, byte b15to8, byte b7to0, boolean NewFra
 //############################################################
 
 void ParseUserInput(String in){ 
-     char a = in.charAt(1);
-     int index = 0;
-     String s = "";
-     char buffcomm[30];
-   
+  
+     // note, the usage of strings caused issues with concaternation
+     // char arrays were opted for instead to avoid this
      
+     char buffcomm[30]; // buffer to store the command
+     char buffval[30]; // buffer to store each integer value
+     int index = 0; // the index of where the command string ends
+     
+     // After the execution of this loop, the buffcomm buffer
+     // will contain the command string
      for( int i = 0; i < in.length(); i++){
-       index++;
        if(in.charAt(i)!= ' '){
          buffcomm[i] = in.charAt(i);
+         index++;
        }
        else{
          break;
        }
      }
      
-     userCommand = buffcomm;
-     Serial.println(userCommand.substring(0, index-1));
+     userCommand = buffcomm; // userCommand is set to the concaternated non-null values
+     userCommand = userCommand.substring(0, index); // userCommand is set to just the initial command string
 
-    
-     String val = "";
-     numValues = 0;
-     int buffindex = 0;
-     char buffval[30];
+     String val = ""; // string that contains the integer value in string format
+     numValues = 0; // the number of values to be used in the inputVec vector
      
+     int length = in.length(); // the length of the input
      
-   for(int j = index; j < in.length(); j++){
-       
-         buffval[buffindex] = in.charAt(j);
-         buffindex++;
-       
-   }
-   
-   for(int k = 0; k<buffindex; k++){
-     s+=buffval[k];
-   }
-   
-   String num = "";
-   
-   for( int p = 0; p<=s.length(); p++){
-      if(p==s.length())
-         num =  s;
-      else
-         num = s.substring(0,s.indexOf(','));
+     for(int j = index+1; j <=length; j++){  // Iterate through remaining characters
+     
+       if((in.charAt(j)!=',' && in.charAt(j)!= ' ')){ // if the character is not a comma delimeter, add it to a string
+         val += in.charAt(j);
          
-      Serial.println(num);
-      s=s.substring(s.indexOf(',')+1);
-   }
-   int vecIndex = 0;
-     
-     
-     
-}
+         if(j == length && val != ""){ // if it's the last character, and val contains characters, write the characters to inputVec and exit the loop
+           inputVec[numValues]= val.toInt();
+           numValues+=1;
+           val = "";// reset the string to empty to get ready to parse the next in
+           break;
+         }
+         
+       }  
+       else if((in.charAt(j)==',' || in.charAt(j)== ' ')){ // if the current character is a delimeter, write the characters of val to inputVec
+         if(in.charAt(j+1) == ' '){ // if there's an extra whitespace after the comma, as in 1, 2, 3, skip an index to accommodate
+           j++;
+         }
+         inputVec[numValues]= val.toInt();
+         numValues+=1;
+         val = "";// reset the string to empty to get ready to parse the next in
+       }  
+       else{
+       }
 
-//############################################################
-// Test Function 1 //
-//############################################################
-void fizz(String command){
-  Serial.println("arduino has fizzed");
-  Serial.println("Vector values inputed were: ");
-  for(int k = 0; k <sizeof(inputVec)/sizeof(int); k++){
-    Serial.println(inputVec[k]);
-  }
-
-}
-
-//############################################################
-// Test Function 2 //
-//############################################################
-void buzz(String command){
-  Serial.println("arduino has buzzed");
-  Serial.println("Vector values inputed were: ");
-  for(int k = 0; k <sizeof(inputVec)/sizeof(int); k++){
-    Serial.println(inputVec[k]);
-  }
+       
+     }
 }
 
 //############################################################
@@ -518,16 +494,10 @@ void buzz(String command){
 
 void DecodeCommand(){
   
-    if(userCommand == ""){
-       fizz(userCommand);
-    }    
-    else if(userCommand=="FREQ"){//overwrite frequency vector
+    if(userCommand=="FREQ"){ //overwrite frequency vector
        changeFreqVec(inputVec, numValues);
     }
-    else if(userCommand == "buzz"){
-       buzz(userCommand);
-    }
-    else{
+    else{ // log an error
        Serial.println("Unrecognized Command");
     }
   
@@ -536,19 +506,19 @@ void DecodeCommand(){
 //############################################################
 // Send feedback over serial
 //############################################################
-void sendFeedback(){
+void sendFeedback(){1,
   
   // First send the command, followed by the values in the input array
   // in the format "command val1,val2,val3,val4..."
-  Serial.print(userCommand);
+  Serial.print(userCommand); 
   
   Serial.print(" ");
   
-  for(int k = 0; k = sizeof(inputVec)/sizeof(int); k++){
+  for(int k = 0; k < numValues; k++){
      Serial.print(inputVec[k]);
   }
   
-  Serial.print(TerminalCharacter);
+  Serial.print(TerminalCharacter); // print the terminal character
 }
 
 //############################################################
@@ -561,6 +531,7 @@ void loop() {
 
   if(Serial.available()>0) {// if there is data to read
     serialString = parseSerial();
+    
     if(serialString != ""){
       ParseUserInput(serialString);
       DecodeCommand();
@@ -575,6 +546,7 @@ void loop() {
         SPIwrite24bitRegister(N2, N1[i], N0[i],true);
     else
         SPIwrite24bitRegister(N2, N1[i], N0[i],false);
+        
   }
   
   SPIwrite24bitRegister(N2, N1[0], N0[0], false);
