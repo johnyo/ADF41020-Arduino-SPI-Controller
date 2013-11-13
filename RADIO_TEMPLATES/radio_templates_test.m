@@ -12,7 +12,7 @@ clear; close all; clc; pause(0.01);
 return
 
 % open device connection
-ard = serial('/dev/ttyACM0', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
+ard = serial('/dev/ttyACM1', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
 fopen(ard);
 
 % close device connection
@@ -129,7 +129,7 @@ fmin  =  7000;
 fchan = 4 * query(ard, 'PLL:PFD?\n', '%s','%i') / 1e3; % has to be correct; otherwise the PLL registers are crap
 fmax  = 14000;
 maxpts = 101; % maximum number of points
-tpause = [0.3, 3, 0.1]; % s pause time [linear, list, #pts]
+tpause = [0.3, 2, 0.1]; % s pause time [linear, list, #pts]
 
 % several runs
 clc;
@@ -188,7 +188,7 @@ for i = 1 : 25
 end
 
    
-fprintf(ard, 'PLL:REGVALS?')
+fprintf(ard, 'PLL:REGVALS?'); pause(tpause(2));
 reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
 for ri=1:length(reply); disp(reply{ri}); end
 

@@ -18,8 +18,6 @@
   serial_inbuf is one of the prime candidates for corruption due to this problem.
 */
 
-
-
 // Libraries
 #include <SPI.h>
 #include <SoftwareSerial.h>
@@ -92,8 +90,8 @@ byte F2 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F1 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F0 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte R2 = 0b10010001; // PLL 24-bit R counter, [R2,R1,R0] (fixed/reserved)
-byte R1[MAX_NUM_FREQ] = {}; // PLL 14-bit R counter, [R2,R1,R0]
-byte R0[MAX_NUM_FREQ] = {}; // PLL 14-bit R counter, [R2,R1,R0]
+byte R1 = 0b00000000; // PLL 14-bit R counter, [R2,R1,R0] (only changes w PFDFreq or PLL_RF_INPUT_FREQ => constant during sweep)
+byte R0 = 0b00000000; // PLL 14-bit R counter, [R2,R1,R0] (only changes w PFDFreq or PLL_RF_INPUT_FREQ => constant during sweep)
 byte N2[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N1[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
@@ -269,6 +267,11 @@ void pll_reset_sweep() {
   num_freq = 0;
 }
 //############################################################
+// initialize new sweep
+void pll_init() {
+  pll_adf40120_init();
+}
+//############################################################
 // check sweep timings
 void check_sweep_timing() {
   // pulse duration / dwell time
@@ -359,7 +362,8 @@ void serial_command_decode() {
   //     program standard sweep
   else if (serial_cmd == "SWEEP:DEFAULT") {
     pll_reset_sweep(); // reset old sweep
-    pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP);
+    pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP); // set default
+    pll_init(); /// program
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //     program linear sweep [min:step:max]
@@ -397,6 +401,7 @@ void serial_command_decode() {
     Serial.println(fstop);
     // program sweep
     pll_set_linear_sweep(fstart, fstep, fstop);
+    pll_init();
   }
   //     program new list sweep
   else if (serial_cmd == "SWEEP:LIST") { 
@@ -407,6 +412,8 @@ void serial_command_decode() {
     while (serial_parse_next_token(false)) { // while there are new values in the buffer ...
       pll_add_sweep_frequency(serial_val); // ... add them to the sweep
     }
+    // and initialize PLL
+    pll_init();
     
   }
   //    select specific switch port (ports # start at 1)
@@ -426,7 +433,7 @@ void serial_command_decode() {
       Serial.print(F("|"));
       Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
       Serial.print(F("|"));
-      Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
+      Serial.print(((long)R2)    << 16 | ((long)R1)    << 8 | (long)R0, HEX);
       Serial.print(F("|"));
       Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
       Serial.println(F(" "));
@@ -529,7 +536,7 @@ char ascii_isprintable(char c) {
 
 
 //############################################################
-// SPECIALIZED DEVICE CONTROL FUNCTIONS
+// PLL / SWEEP CONTROL FUNCTIONS
 //############################################################
 // sends a pulse signal on the sync/handshake line (DAC)
 void pulse_sync_signal(int signal) {
@@ -585,17 +592,19 @@ void pll_adf40120_addfreq(int RFout, int i) {
   if (Powerdown==2) Powerdown++;
 
   // calculate register values
-  //    R-counter (23-16: fixed,  15-2: R-Counter,  1-0: 00)
-  R1[i] = (byte)(R >> 6);
-  R0[i] = (byte)(R << 2) | 0x0;
+  if (i == 0) {
+    //    Function latch
+    F2 = (byte)( Prescaler << 6 | (Powerdown & 0x2) << 5 | CPsetting1 << 2 | CPsetting2 >> 1 );
+    F1 = (byte)( CPsetting2 << 7 | Timeout << 3 | Fastlock << 1 | CP3state);
+    F0 = (byte)( PDPolarity << 7 | Muxout << 4 | (Powerdown & 0x1) << 3 | CounterReset << 2) | 0x2;
+    //    R-counter (23-16: fixed,  15-2: R-Counter,  1-0: 00)
+    R1 = (byte)(R >> 6);
+    R0 = (byte)(R << 2) | 0x0;
+  }
   //    N-counter (23-22: 00, 21: CP gain,  20-8: B-Counter,  7-2: A-Counter,  1-0: 01)
   N2[i] = 0b00111111 & (CPGain << 5 | (byte)(B >> 8));
   N1[i] = (byte)B;
   N0[i] = ((A&0x3F) << 2) | 0x1;
-  //    Function latch
-  F2 = (byte)( Prescaler << 6 | (Powerdown & 0x2) << 5 | CPsetting1 << 2 | CPsetting2 >> 1 );
-  F1 = (byte)( CPsetting2 << 7 | Timeout << 3 | Fastlock << 1 | CP3state);
-  F0 = (byte)( PDPolarity << 7 | Muxout << 4 | (Powerdown & 0x1) << 3 | CounterReset << 2) | 0x2;
 
   // Debug output
   /*
@@ -603,12 +612,24 @@ void pll_adf40120_addfreq(int RFout, int i) {
    Serial.print(F("|"));
    Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
    Serial.print(F("|"));
-   Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
+   Serial.print(((long)R2)    << 16 | ((long)R1)    << 8 | (long)R0, HEX);
    Serial.print(F("|"));
    Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
    Serial.println(F(" "));
    */
-}   
+}  
+//############################################################
+// initialize ADF40120 PLL (write F, R, and N)
+void pll_adf40120_init() {
+  spi_pll_adf40120(F2   , F1  ,  F0   );
+  spi_pll_adf40120(R2   , R1  ,  R0   );
+  spi_pll_adf40120(N2[0], N1[0], N0[0]);
+}
+
+
+
+//############################################################
+// SWITCH CHAIN CONTROL FUNCTIONS
 //############################################################
 // reset switch chain
 void switch_chain_reset() {
