@@ -19,6 +19,36 @@ fopen(ard);
 fclose(ard);
 
 
+% *******************************************************************************************************
+% MANUAL SERIAL INTERFACE ROBUSTNESS TESTING: RANDOM STRINGS
+
+% a valid command (just for testing)
+fprintf(ard, 'FREQ 1,2,3,4,5,6,7');
+
+% random commands of random length
+%     settings
+str_len = 700; % bytes maximum length (choose slightly larger than SERIAL_INBUF_SIZE)
+char_set = [0, 255]; % all 1-byte characters (this might cause problems after some time)
+char_set = [48, 122]; % 0-9, a-z, A-Z, and a few special characters
+char_set = [32, 126]; % all printable ASCII
+%     create and send command
+len = randi([1, str_len], 1);
+str = char(randi(char_set, [1,len]));
+fprintf(ard, str);
+
+% FREQ commands with variable length
+%     settings
+maxpts = 101; % maximum number of points
+
+
+
+
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
+
+
 
 % *******************************************************************************************************
 % SERIAL INTERFACE ROBUSTNESS TESTING: RANDOM STRINGS
