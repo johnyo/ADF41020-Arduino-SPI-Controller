@@ -3,13 +3,14 @@
 /* Author: Daniel Arnitz */
 
 /* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller, Serial command interface. */
+/* Testing: Ethernet */
 
 /* TODO: implement PLL R-counter check */
-
 
 // Libraries
 #include <SPI.h>
 #include <SoftwareSerial.h>
+//#include <Ethernet.h>
 
 /* SPI TIMING AND INTERFACE PARAMETERS */
 #define SPI_BITORDER_DEFAULT MSBFIRST // everything assumes MSB first; do not change without modifying the code!
@@ -19,22 +20,33 @@
 /*    clock and timing parameters */
 #define SPI_CLOCK_DEFAULT SPI_CLOCK_DIV2 // default: 8 MHz (for AD41020, MCP4811)
 #define SPI_CLOCK_TLE723X SPI_CLOCK_DIV4 // 4 MHz for TLE723x
-/*    binary masks for chip enable - PORTD (7:PLL, 5:DAC, 4:switch-driver-chain) */
+/*    binary masks for chip enable - PORTD (7:PLL, 5:DAC, [4:RESERVED], 3:switch-driver-chain) */
 #define SPI_CE_MASK_PLL 0b10000000 // PLL controller
 #define SPI_CE_MASK_DAC 0b00100000 // sync signal DAC
-#define SPI_CE_MASK_DRV 0b00010000 // switch driver chain
+#define SPI_CE_MASK_DRV 0b00001000 // switch driver chain
 
-/* DAC sync line values (10 bit = 1023 max = 4V) */
+/* DAC sync line values (10 bit = 1023 max \approx 4V) */
 #define SYNC_SIGNAL_STARTMEAS 1023 // start of entire measurement/loop
 #define SYNC_SIGNAL_STARTSWEEP 512 // start of sweep
 #define SYNC_SIGNAL_STARTSTEP 256 // start of step
 #define SYNC_SIGNAL_RESET 0 // default
 
 /* SERIAL COMMAND INTERFACE */
+#define SERIAL_INBUF_SIZE 1024 // bytes serial input buffer
 #define SERIAL_EOL '\n' // end-of-line terminator for serial interface
 #define SERIAL_SEP_C2V ' ' // separator between command and value(s)
 #define SERIAL_SEP_V2V ',' // separator between two values
-#define SERIAL_INBUF_SIZE 1001 // bytes serial input buffer
+#define SERIAL_HANDSHAKE_OK "OK -- " // prefix for "OK"
+#define SERIAL_HANDSHAKE_ERR "ERROR -- " // prefix for "error"
+
+/* ETHERNET */
+/*
+byte mac[] = {0x71,0x06,0x52,0x59,0x12,0xBA}; // random MAC
+IPAddress ip(192,168,1,177); // reserved on Reynoldslab network
+unsigned int localPort = 5025; // standard SCPI port is 5025
+//    initialize the Ethernet server
+EthernetServer eth_server(localPort);
+*/
 
 /* SWITCHES */
 #define SWITCH_NUM_PORTS 6 // number of ports per switch
@@ -42,18 +54,20 @@
 
 /* SWEEP  */
 /*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
-#define MAX_NUM_FREQ 201 // maximum number of frequencies
+#define MAX_NUM_FREQ 101 // maximum number of frequencies
 #define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
 /*    timing parameters (approximate; plus execution time) */
 #define PULSE_DURATION 250 // sync signaling pulse duration in microseconds (must be smaller than sweep_dwell_time/2)
 #define DWELL_TIME 500 // ms default dwell time (can be changed)
 #define SWEEP_PAUSE 15000  // pause between sweeps in microseconds (e.g, for switching time)
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
+/*    default sweep (linear) */
+#define SWEEP_DEFAULT_FSTART 10415 // MHz start frequency
+#define SWEEP_DEFAULT_FSTEP     45 // MHz frequency step
+#define SWEEP_DEFAULT_FSTOP  13070 // MHz stop frequency
 
-/* HANDSHAKE / ERRORS */
+/* MISC */
 #define HALT_IF_ERROR false // stop execution in case of errors
-#define SERIAL_HANDSHAKE_OK "OK -- " // prefix for "OK"
-#define SERIAL_HANDSHAKE_ERR "ERROR -- " // prefix for "error"
 
 /* GLOBAL VARIABLES */
 /*    frequency sweep and PLL control */
@@ -69,7 +83,10 @@ byte N2[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N1[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 /*    sweep timing */
+boolean continuous_run_panels = false; // continuous run, all panels (including switches)
+boolean continuous_run_frequency = false; // continuous frequency sweep (current switch only)
 int sweep_dwell_time = DWELL_TIME; // dwell time at each step in microseconds
+int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
 /*    serial command interace */
 String  serial_cmd = ""; //
 int     serial_val = 0; // 
@@ -110,11 +127,17 @@ void setup() {
   //   the 16 MHz system clock. Default is divide by 4.
   SPI.setClockDivider(SPI_CLOCK_DEFAULT);
   
-  // Check sweep timings (this is halt on error)
-  check_sweep_timing();
+  // Start the Ethernet server
+  /*
+  Ethernet.begin(mac, ip);
+  eth_server.begin();
+  */
   
-  // Initialize PLL with standard linear sweep
-  pll_set_linear_sweep(10415, 45, 13070);
+  // Initialize PLL
+  //     check sweep timings
+  check_sweep_timing();
+  //     initialize PLL with standard linear sweep
+  pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP);
   
   // Initialize switch chain (all off)
   switch_chain_reset();
@@ -137,89 +160,15 @@ void loop() {
   if (serial_inbuf_complete){
     serial_command_decode();
   }
-
-
-
-  /* SERIAL CONTROL INTERFACE */
-  /*
-  //    get serial data
-  if (Serial.available() > 0){
-    serial_input();
+  // continuous run modes
+  if (continuous_run_panels) {
+    continuous_run_frequency = false; // prevent additional sweep for last panel
+    run_panel_sweep();
   }
-  //    if command is complete: parse
-  if (serial_inbuf_complete){
-    // decode command and reset interface
-    serial_command_decode();
+  if (continuous_run_frequency) {
+    continuous_run_panels = false; // prevent switching
+    run_frequency_sweep();
   }
-  */
-  
-  /* SWITCH CONTROL: RUNNING BIT */
-  /*
-  // initialize switch chain (first switch active)
-  switch_chain_init();
-  // output currently active switch port on DAC output
-  spi_dac_mcp4811(switch_port_active);
-  delay(LONG_PAUSE);
-  // cycle through all ports
-  for(byte i = 0; i < SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 1; i++) {
-    // next switch port
-    switch_chain_next();
-    // output currently active switch port on DAC output
-    spi_dac_mcp4811(switch_port_active);
-    // wait [ms]
-    delay(LONG_PAUSE);
-  }
-  */
-
-  /* SWITCH CONTROL: ARBITRARY PATTERNS */
-  /*
-  // initial state of all switches in the chain
-  switch_states = {0, 0, 0}; 
-  // set initial state
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
-  spi_dac_mcp4811(switch_states[0] << 4); // also output state on DAC
-  delay(LONG_PAUSE);
-  // loop through switch states 1...6
-  for(byte i = 0; i < 6; i++) {
-  // define patterns for each switch
-  switch_states[0] = 0b00000001 << i; // counts up
-  switch_states[1] = 0b00100000 >> i; // counts down
-  switch_states[2] = switch_states[2] | switch_states[0]; // fills from zero
-  // change states
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
-  spi_dac_mcp4811(switch_states[0] << 4); // also output state on DAC
-  // wait [ms]
-  delay(LONG_PAUSE);
-  }
-  */
-
-  /* PLL CONTROL, 101-point sweep */
-  /*
-  for(int i = 0; i < 101; i++) {
-   // program PLL
-   spi_pll_adf40120(0, 0, (byte)i); // ### REPLACE DUMMY VALUES BY REAL DATA
-   // sync signal
-   if(i == 0)
-   pulse_sync_signal(SYNC_SIGNAL_STARTSWEEP); // new sweep
-   else
-   pulse_sync_signal(SYNC_SIGNAL_STARTSTEP); // new step
-   // wait for step dwell time
-   delayMicroseconds(sweep_dwell_time - PULSE_DURATION);
-   }
-   // pause after sweep
-   delayMicroseconds(SWEEP_PAUSE);
-   */
-
-
-  /* DAC TEST */
-  /*
-  for(int i = 0; i < 1024; i++) {
-   spi_dac_mcp4811(i);
-   delay(1);
-   }
-   spi_dac_mcp4811(0);
-   delay(1000);
-   */
 }
 
 
@@ -238,7 +187,7 @@ void run_panel_sweep() {
       switch_chain_next();
     }    
     // wait for switches to connect
-    delayMicroseconds(SWEEP_PAUSE);
+    delayMicroseconds(sweep_pause_time);
     // signal "start of measurement"
     if (i == 0) {
       pulse_sync_signal(SYNC_SIGNAL_STARTMEAS);
@@ -281,6 +230,12 @@ void run_frequency_sweep() {
 void pll_set_linear_sweep(int fstart, int fstep, int fstop) {
   // reset number of frequencies
   num_freq = 0;
+  // do a quick sanity check
+  if ((fstop < fstart) || (fstep == 0) || ((fstop-fstart)/fstep + 1 > MAX_NUM_FREQ)) {
+    Serial.print(SERIAL_HANDSHAKE_ERR);
+    Serial.print("Incorrect linear sweep parameters. Ignoring.");
+    return;
+  }
   // populate frequency vector (PLL register values)
   for (int curr_freq = fstart; curr_freq <= fstop; curr_freq += fstep) {
     pll_adf40120_addfreq(curr_freq, num_freq);
@@ -303,8 +258,11 @@ void pll_reset_sweep() {
 void check_sweep_timing() {
   // pulse duration / dwell time
   if (2*PULSE_DURATION > sweep_dwell_time) {
-    Serial.print(SERIAL_HANDSHAKE_ERR); Serial.println("PULSE_DURATION needs to be smaller than sweep_dwell_time/2. Execution halted.");
-    while(true);
+    sweep_dwell_time = 2 * PULSE_DURATION;
+    Serial.print(SERIAL_HANDSHAKE_ERR);
+    Serial.print("Dwell time must be larger or equal to 2 * PULSE_DURATION = ");
+    Serial.print(sweep_dwell_time);
+    Serial.println(" us. Setting to this value.");
   }
 }
 
@@ -317,39 +275,83 @@ void check_sweep_timing() {
 //    returns true if a new token was found; false if not
 void serial_command_decode() {
   // get command from buffer
-  serial_parse_next_token();
+  serial_parse_next_token(true);
   serial_cmd.toUpperCase();
+  
+  /*
+  Serial.print("BUF |"); // [DEBUG]
+  Serial.print(serial_inbuf); // [DEBUG]
+  Serial.println("|"); // [DEBUG]
+  */
+  
   // decode command
-  //    run frequency sweep for all panels
-  if (serial_cmd == "RUN:PANELS") { 
-    run_panel_sweep();
+  //    run frequency sweep for all panels (single)
+  if (serial_cmd == "RUN:PANELS") {
+    continuous_run_panels = false; // switch off continuous modes
+    continuous_run_frequency = false;
+    run_panel_sweep(); // run
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
-  //    run frequency sweep
-  else if (serial_cmd == "RUN:FREQ") { 
-    run_frequency_sweep();
+  //    continuously run frequency sweeps for all panels
+  else if (serial_cmd == "CONT:PANELS") { 
+    continuous_run_panels = true; // switch on continuous mode
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
-  //     update PFD frequency
+  //    run frequency sweep (single)
+  else if (serial_cmd == "RUN:FREQ") {
+    continuous_run_panels = false; // switch off continuous modes
+    continuous_run_frequency = false;
+    run_frequency_sweep(); // run
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+  }
+  //     continuously run frequency sweeps
+  else if (serial_cmd == "CONT:FREQ") { 
+    continuous_run_frequency = true; // switch on continuous mode
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+  }
+  //     stop continuous runs
+  else if ((serial_cmd == "SINGLE") || (serial_cmd == "STOP"))  { 
+    continuous_run_panels = false;
+    continuous_run_frequency = false;
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+  }
+  //     PFD frequency (set and query)
   else if (serial_cmd == "PLL:PFD") { 
     pll_reset_sweep(); // reset sweep (register values need to be recalculated)
-    serial_parse_next_token(); // get value from buffer
+    serial_parse_next_token(false); // get value from buffer
     PFDFreq = serial_val; // update PFD frequency
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
     Serial.println(PFDFreq);
   }
-  //     update dwell time
+  else if (serial_cmd == "PLL:PFD?") {
+    Serial.println(PFDFreq);
+  } 
+  //     dwell time (set and query)
   else if (serial_cmd == "TIME:DWELL") {
-    serial_parse_next_token(); // get value from buffer
-    sweep_dwell_time = serial_val; // update PFD frequency
+    serial_parse_next_token(false); // get value from buffer
+    sweep_dwell_time = serial_val; // update time
     check_sweep_timing(); // check new timing
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
     Serial.println(sweep_dwell_time);
   } 
+  else if (serial_cmd == "TIME:DWELL?") {
+    Serial.println(sweep_dwell_time);
+  } 
+  //     update pause time between sweeps
+  else if (serial_cmd == "TIME:PAUSE") {
+    serial_parse_next_token(false); // get value from buffer
+    sweep_pause_time = serial_val; // update time
+    check_sweep_timing(); // check new timing
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+    Serial.println(sweep_pause_time);
+  } 
+  else if (serial_cmd == "TIME:PAUSE?") {
+    Serial.println(sweep_pause_time);
+  } 
   //     program standard sweep
   else if (serial_cmd == "SWEEP:DEFAULT") {
     pll_reset_sweep(); // reset old sweep
-    pll_set_linear_sweep(10415, 45, 13070);
+    pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP);
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //     program linear sweep [min:step:max]
@@ -359,19 +361,19 @@ void serial_command_decode() {
     int fstart = 0;
     int fstep = 0;
     int fstop = 0;
-    if (serial_parse_next_token()) {
+    if (serial_parse_next_token(false)) {
       fstart = serial_val;
     } 
     else {
       Serial.println("Start value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
     }
-    if (serial_parse_next_token()) {
+    if (serial_parse_next_token(false)) {
       fstep = serial_val;
     } 
     else {
       Serial.println("Step value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
     }
-    if (serial_parse_next_token()) {
+    if (serial_parse_next_token(false)) {
       fstop = serial_val;
     } 
     else {
@@ -394,27 +396,24 @@ void serial_command_decode() {
     // send feedback
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
     // update sweep
-    while (serial_parse_next_token()) { // while there are new values in the buffer ...
+    while (serial_parse_next_token(false)) { // while there are new values in the buffer ...
       pll_add_sweep_frequency(serial_val); // ... add them to the sweep
     }
+    
   }
   //    select specific switch port (ports # start at 1)
   else if (serial_cmd == "SWITCH:SELECT") {
-    serial_parse_next_token(); // get value from buffer
+    serial_parse_next_token(false); // get value from buffer
     switch_chain_selectfeed(serial_val); // switch on this feed
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
     Serial.println(serial_val);
   } 
   //    get number of frequencies in sweep
-  else if (serial_cmd == "GET:NUM_FREQ") {
+  else if (serial_cmd == "SWEEP:POINTS?") {
     Serial.println(num_freq);
   } 
-  //    get PLL PFD frequency value
-  else if (serial_cmd == "GET:PFD") {
-    Serial.println(PFDFreq);
-  } 
   //    get PLL register values
-  else if (serial_cmd == "GET:REGVALS") {
+  else if (serial_cmd == "PLL:REGVALS?") {
     for(int i = 0; i < num_freq; i++) {
       Serial.print("|");
       Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
@@ -428,7 +427,7 @@ void serial_command_decode() {
   //    unrecognized command; throw an error
   else {
     Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print("Unrecognized command ");
+    Serial.print("Unrecognized command: ");
     Serial.println(serial_cmd);
   }
   // reset command buffer
@@ -437,18 +436,21 @@ void serial_command_decode() {
 //############################################################
 // parse string and return the next token (command string - whitespace - comma separated list of values)
 //    returns true if a new token was found; false if not
-boolean serial_parse_next_token() {
+boolean serial_parse_next_token(boolean iscmd) {
   // split index in string
   int ind_sep = 0;
   // check if buffer is already empty
   if (serial_inbuf.length() == 0){
+    //Serial.println("BUFFER IS EMPTY");
     return false;
   }
-  //Serial.println("------------------------------------");
-  //Serial.println("BUFFER: " + serial_inbuf);
+  //Serial.print("BUFFER: "); Serial.println(serial_inbuf);
   // next token is a command
-  if (serial_cmd.length() == 0) {
+  if (iscmd) {
     ind_sep = serial_inbuf.indexOf(SERIAL_SEP_C2V); // find command-value separator
+    if (ind_sep < 0) { // no separator: select entire string (likely command only)
+      ind_sep = serial_inbuf.length();
+    }
     serial_cmd = serial_inbuf.substring(0,ind_sep); // -> command string
     //Serial.println("COMMAND: " + serial_cmd);
   }
@@ -461,18 +463,26 @@ boolean serial_parse_next_token() {
     serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
     //Serial.print("VALUE: "); Serial.println(serial_val);
   }
-  // remove decoded token plus separator; get rid of any whitespaces
-  serial_inbuf = serial_inbuf.substring(ind_sep+1);
+  //Serial.print("SEPARATOR POSITION: "); Serial.println(ind_sep);
+  // remove decoded token plus separator
+  serial_inbuf.replace(serial_inbuf.substring(0,ind_sep+1), ""); // replace substring with empty string
+  // get rid of any whitespaces
   serial_inbuf.trim();
-  //Serial.println("REMAINING BUFFER: " + serial_inbuf);
+  //Serial.print("REMAINING BUFFER: "); Serial.println(serial_inbuf);
   return true;
 }
 //############################################################
 // write serial input to buffer (copied from SerialEvent example)
 void serial_input() {
   while (Serial.available()) {
+    // prevent buffer overruns
+    if (serial_inbuf.length() >= SERIAL_INBUF_SIZE) {
+      Serial.print(SERIAL_HANDSHAKE_ERR);
+      Serial.println("Input buffer overrun. Resetting.");
+      serial_reset_cmd_interface();
+    }
     // get the new character
-    char inChar = (char)Serial.read(); 
+    char inChar = (char)Serial.read();
     // if the incoming character is the EOL character...
     if (inChar == SERIAL_EOL) {
       // make sure we don't have any trailing/leading whitespaces
@@ -727,3 +737,93 @@ void spi_write_int(int data) {
   spi_write_16(b15to8, b7to0);
 }
 
+
+
+
+
+//########################################################################################################################
+//############################################################
+//############################################################
+// OLD AND RUSTY, MAIN LOOP
+//############################################################
+
+  /* SERIAL CONTROL INTERFACE */
+  /*
+  //    get serial data
+  if (Serial.available() > 0){
+    serial_input();
+  }
+  //    if command is complete: parse
+  if (serial_inbuf_complete){
+    // decode command and reset interface
+    serial_command_decode();
+  }
+  */
+  
+  /* SWITCH CONTROL: RUNNING BIT */
+  /*
+  // initialize switch chain (first switch active)
+  switch_chain_init();
+  // output currently active switch port on DAC output
+  spi_dac_mcp4811(switch_port_active);
+  delay(LONG_PAUSE);
+  // cycle through all ports
+  for(byte i = 0; i < SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 1; i++) {
+    // next switch port
+    switch_chain_next();
+    // output currently active switch port on DAC output
+    spi_dac_mcp4811(switch_port_active);
+    // wait [ms]
+    delay(LONG_PAUSE);
+  }
+  */
+
+  /* SWITCH CONTROL: ARBITRARY PATTERNS */
+  /*
+  // initial state of all switches in the chain
+  switch_states = {0, 0, 0}; 
+  // set initial state
+  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+  spi_dac_mcp4811(switch_states[0] << 4); // also output state on DAC
+  delay(LONG_PAUSE);
+  // loop through switch states 1...6
+  for(byte i = 0; i < 6; i++) {
+  // define patterns for each switch
+  switch_states[0] = 0b00000001 << i; // counts up
+  switch_states[1] = 0b00100000 >> i; // counts down
+  switch_states[2] = switch_states[2] | switch_states[0]; // fills from zero
+  // change states
+  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+  spi_dac_mcp4811(switch_states[0] << 4); // also output state on DAC
+  // wait [ms]
+  delay(LONG_PAUSE);
+  }
+  */
+
+  /* PLL CONTROL, 101-point sweep */
+  /*
+  for(int i = 0; i < 101; i++) {
+   // program PLL
+   spi_pll_adf40120(0, 0, (byte)i); // ### REPLACE DUMMY VALUES BY REAL DATA
+   // sync signal
+   if(i == 0)
+   pulse_sync_signal(SYNC_SIGNAL_STARTSWEEP); // new sweep
+   else
+   pulse_sync_signal(SYNC_SIGNAL_STARTSTEP); // new step
+   // wait for step dwell time
+   delayMicroseconds(sweep_dwell_time - PULSE_DURATION);
+   }
+   // pause after sweep
+   delayMicroseconds(SWEEP_PAUSE);
+   */
+
+
+  /* DAC TEST */
+  /*
+  for(int i = 0; i < 1024; i++) {
+   spi_dac_mcp4811(i);
+   delay(1);
+   }
+   spi_dac_mcp4811(0);
+   delay(1000);
+   */
