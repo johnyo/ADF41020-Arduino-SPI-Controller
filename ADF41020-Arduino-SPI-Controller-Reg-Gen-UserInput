@@ -80,6 +80,8 @@ for external syncing purposes.
 // Initialize command from user
 String userCommand = "";
 
+boolean serialComplete = false;
+
 // Initialize number of values input by user
 int numValues = 0;
 
@@ -261,25 +263,66 @@ void changeFreqVec(int array [], int length){
 
 String parseSerial(){
   
-  String command; // String of the command red in from serial
-  boolean stringComplete = false;
-  int time1 = millis(); // set time1 to the initial time before reading serial data
-  int time2 = time1; // set time2 to the initial time for the purpose of seeing the differance between time1 and time2
+//  String command; // String of the command red in from serial
+//  boolean stringComplete = false;
+//  int time1 = millis(); // set time1 to the initial time before reading serial data
+//  int time2 = time1; // set time2 to the initial time for the purpose of seeing the differance between time1 and time2
+//  
+//    while(!stringComplete) { // while there is data available and we have not reached a terminal character
+//            char inChar = (char)Serial.read(); // Read a character
+//            command+=inChar; // Store it
+//            if(inChar == TerminalCharacter){
+//              stringComplete = true; // The input has been read in in its entirety, so the loop exits
+//            }
+//            time2 = millis(); // set time2 to current time
+//            if(time2-time1>10000){ // check if time has surpassed 10 seconds
+//              command = ""; // return an empty string if it has taken more than 10 seconds to read the data
+//              break;
+//            }
+//    }
+//    
+//  command.trim(); // remove any trailing or begininning white space
+//  return command;
+   serialComplete = false;
+   String serial_inbuf = "";
+   
+   while(Serial.available()){
   
-    while(Serial.available() && !stringComplete) { // while there is data available and we have not reached a terminal character
-            char inChar = (char)Serial.read(); // Read a character
-            command+=inChar; // Store it
-            if(inChar == TerminalCharacter){
-              stringComplete = true; // The input has been read in in its entirety, so the loop exits
-            }
-            time2 = millis(); // set time2 to current time
-            if(time2-time1>10000){ // check if time has surpassed 10 seconds
-              command = ""; // return an empty string if it has taken more than 10 seconds to read the data
-            }
-    }
+     if(serial_inbuf.length() >= MaxLength){
+       Serial.println("input has exceeded maximum buffer size");
+       serial_inbuf = "";
+       break;
+     }
+     
+     char inChar = (char)Serial.read();
     
-  command.trim(); // remove any trailing or begininning white space
-  return command;
+     if( inChar == TerminalCharacter){
+       serial_inbuf.trim();
+       serialComplete = true;
+     }
+     else{
+       if((inChar > 31) && (inChar < 127)){
+         serial_inbuf += inChar;
+       }
+       else{
+         Serial.println(F("Unrecognized character or bit error"));
+         serial_inbuf = "";
+         break;
+       }
+     }
+     
+     if(!Serial.available()){
+       delay(1);
+     }
+       
+   }
+   if(serialComplete){
+    return serial_inbuf;
+   }
+   else{
+     return "";
+   }
+
  
 }
 
@@ -462,6 +505,17 @@ void ParseUserInput(String in){
      
      for(int j = index+1; j <=length; j++){  // Iterate through remaining characters
      
+       if(j!= length && in.charAt(j) != '0' && in.charAt(j) != '1' && in.charAt(j) != '2'  && in.charAt(j) != '3'  && in.charAt(j) != '4'  && in.charAt(j) != '5' && in.charAt(j) != '6'  && in.charAt(j) != '7'  && in.charAt(j) != '8'  && in.charAt(j) != '9' && in.charAt(j) != ',' && in.charAt(j) != ' '){
+         Serial.println("Vector contained non-number values");
+         break;
+       }
+     
+       if(val.length() > 5){
+          Serial.println(F("Integer overflow for frequency quantity"));
+          val ="";
+          break;   
+          
+       }
        if((in.charAt(j)!=',' && in.charAt(j)!= ' ')){ // if the character is not a comma delimeter, add it to a string
          val += in.charAt(j);
          
@@ -493,7 +547,8 @@ void ParseUserInput(String in){
 //############################################################
 
 void DecodeCommand(){
-  
+    Serial.println(userCommand);
+    
     if(userCommand=="FREQ"){ //overwrite frequency vector
        changeFreqVec(inputVec, numValues);
     }
@@ -515,10 +570,13 @@ void sendFeedback(){1,
   Serial.print(" ");
   
   for(int k = 0; k < numValues; k++){
-     Serial.print(inputVec[k]);
+     Serial.print(inputVec[k]); 
+     Serial.print(',');
   }
   
   Serial.print(TerminalCharacter); // print the terminal character
+  
+  userCommand = "";
 }
 
 //############################################################
@@ -534,8 +592,10 @@ void loop() {
     
     if(serialString != ""){
       ParseUserInput(serialString);
+      if(serialComplete){
       DecodeCommand();
       sendFeedback();
+      }
     }
   }
   
