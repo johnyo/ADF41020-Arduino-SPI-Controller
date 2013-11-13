@@ -1,11 +1,11 @@
 
 /* Purpose of this program is to create templates & code that can later be merged with the other sweep/radio control */
+/*    Pinout for Arduino UNO */
 /* Author: Daniel Arnitz */
 
 /* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller, Serial command interface. */
 /* Testing: Ethernet */
 
-/* TODO: implement PLL R-counter check */
 
 /* *************************************/
 /* IMPORTANT -- IMPORTANT -- IMPORTANT */
@@ -17,6 +17,7 @@
   If the code fails with unexplicable and seemingly random errors, check for SRAM problems! In this code, for example,
   serial_inbuf is one of the prime candidates for corruption due to this problem.
 */
+
 
 // Libraries
 #include <SPI.h>
@@ -149,8 +150,10 @@ void setup() {
   // Initialize PLL
   //     check sweep timings
   check_sweep_timing();
-  //     initialize PLL with standard linear sweep
+  //     program the standard linear sweep
   pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP);
+  //    and initialize the PLL
+  pll_init();
   
   // Initialize switch chain (all off)
   switch_chain_reset();
@@ -364,7 +367,7 @@ void serial_command_decode() {
     pll_reset_sweep(); // reset old sweep
     pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP); // set default
     pll_init(); /// program
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //     program linear sweep [min:step:max]
   else if (serial_cmd == "SWEEP:LIN") { 
@@ -414,8 +417,31 @@ void serial_command_decode() {
     }
     // and initialize PLL
     pll_init();
-    
   }
+  //    set switch states directly
+  else if (serial_cmd == "SWITCH:STATES") {
+    // modify switch states
+    byte i = 0;
+    while (serial_parse_next_token(false) && (i < SWITCH_NUM_SWITCHES)) {
+      switch_states[i] = (byte)serial_val;
+      i++;
+    }
+    // update switch chain / send feedback
+    if (i == SWITCH_NUM_SWITCHES) {
+      switch_chain_apply();
+      Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
+    } else {
+      Serial.print(SERIAL_HANDSHAKE_ERR);
+      Serial.println(F("Cannot update switch chain; not enough values."));
+    }
+  } 
+  else if (serial_cmd == "SWITCH:STATES?") {
+    for(byte i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
+      Serial.print(switch_states[i]);
+      Serial.print(F(","));
+    }
+    Serial.println(switch_states[SWITCH_NUM_SWITCHES-1]);
+  } 
   //    select specific switch port (ports # start at 1)
   else if (serial_cmd == "SWITCH:SELECT") {
     serial_parse_next_token(false); // get value from buffer
@@ -430,13 +456,11 @@ void serial_command_decode() {
   //    get PLL register values
   else if (serial_cmd == "PLL:REGVALS?") {
     for(int i = 0; i < num_freq; i++) {
-      Serial.print(F("|"));
       Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
       Serial.print(F("|"));
       Serial.print(((long)R2)    << 16 | ((long)R1)    << 8 | (long)R0, HEX);
       Serial.print(F("|"));
-      Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
-      Serial.println(F(" "));
+      Serial.println(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
     }  
   } 
   //    unrecognized command; throw an error
@@ -452,12 +476,11 @@ void serial_command_decode() {
 // parse string and return the next token (command string - whitespace - comma separated list of values)
 //    returns true if a new token was found; false if not
 boolean serial_parse_next_token(boolean iscmd) {
-  //Serial.print(F("BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
+  Serial.print(F("BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   // split index in string
   int ind_sep = 0;
   // check if buffer is already empty
   if (serial_inbuf.length() == 0){
-    //Serial.println(F("BUFFER IS EMPTY"));
     return false;
   }
   // next token is a command
@@ -467,8 +490,8 @@ boolean serial_parse_next_token(boolean iscmd) {
       ind_sep = serial_inbuf.length();
     }
     serial_cmd = serial_inbuf.substring(0,ind_sep); // -> command string
-    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
-    //Serial.println(F("COMMAND: ") + serial_cmd);
+    Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    Serial.print(F("COMMAND: ")); Serial.println(serial_cmd);
   }
   // next token is an integer value
   else {
@@ -477,14 +500,16 @@ boolean serial_parse_next_token(boolean iscmd) {
       ind_sep = serial_inbuf.length();
     }
     serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
-    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
-    //Serial.print(F("VALUE: "); Serial.println(serial_val);
+    Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    Serial.print(F("VALUE: ")); Serial.println(serial_val);
   }
   // remove decoded token plus separator
-  serial_inbuf.replace(serial_inbuf.substring(0,ind_sep+1), ""); // replace substring with empty string   [TODO] better way?
+  serial_inbuf_shift(ind_sep+1);
+  //serial_inbuf = serial_inbuf.substring(ind_sep+1); // TODO: fails for long vectors (memory?)
+  
   // get rid of any whitespaces
   serial_inbuf.trim();
-  //Serial.print(F("REMAINING BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
+  Serial.print(F("REMAINING BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   return true;
 }
 //############################################################
@@ -532,7 +557,20 @@ void serial_reset_cmd_interface() {
 char ascii_isprintable(char c) {
   return (c > 31) && (c < 127);
 }
-
+//############################################################
+// "delete" leading n characters from input buffer (in place to save memory)
+// TODO: there should be a better way to do this...
+void serial_inbuf_shift(unsigned int n) {
+  // copy characters in string
+  for(unsigned int i = 0; i < serial_inbuf.length(); i++) {
+    serial_inbuf.setCharAt(i, serial_inbuf[i+n]);
+  }
+  // fill the rest of the string with whitespaces and trim
+  for(unsigned int i = serial_inbuf.length()-n; i < serial_inbuf.length(); i++) {
+    serial_inbuf.setCharAt(i, ' '); // using \0 does not work; shy not?
+  }
+  serial_inbuf.trim();
+}
 
 
 //############################################################
@@ -630,6 +668,11 @@ void pll_adf40120_init() {
 
 //############################################################
 // SWITCH CHAIN CONTROL FUNCTIONS
+//############################################################
+// apply current state to switch chain
+void switch_chain_apply() {
+  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+}
 //############################################################
 // reset switch chain
 void switch_chain_reset() {

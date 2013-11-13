@@ -75,11 +75,11 @@ pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
 
 % command list
 cmd_list = {'RUN:PANELS', 'RUN:FREQ', 'CONT:PANELS', 'CONT:FREQ', 'STOP', 'SINGLE',...
-   'PLL:PFD %i', 'PLL:PFD?', 'TIME:DWELL 500', 'TIME:DWELL?',  'TIME:PAUSE %i', 'TIME:PAUSE?', 'SWEEP:POINTS?'...
+   'PLL:PFD %i', 'PLL:PFD?', 'TIME:DWELL 500', 'TIME:DWELL?', 'TIME:PAUSE %i', 'TIME:PAUSE?', 'SWEEP:POINTS?'...
    'SWEEP:DEFAULT', 'SWEEP:LIN %i,%i,%i', 'SWEEP:LIST %i,%i,%i,%i,%i,%i,%i,%i,%i,%i', ...
-   'SWITCH:SELECT %i', };
+   'SWITCH:STATES %i,%i,%i', 'SWITCH:STATES?', 'SWITCH:SELECT %i', };
 % send commands in random order, output Arduino's reply
-for i = 1 : 25
+for i = 1 : 10
    % reset
    reply = '';
    flushinput(ard);
@@ -97,7 +97,7 @@ for i = 1 : 25
    % send this command
    fprintf(ard, cmd);
    % give the Arduino time to process this
-   pause(0.5);
+   pause(1);
    % get reply from buffer
    if ard.BytesAvailable > 0
       reply = strtrim(fgetl(ard));
@@ -110,7 +110,7 @@ end
 flushinput(ard);
 flushoutput(ard);
 fprintf(ard, 'STOP');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
+pause(1); while ard.BytesAvailable > 0; disp(fgetl(ard)); end
 
 
 
@@ -129,9 +129,9 @@ fmin  =  7000;
 fchan = 4 * query(ard, 'PLL:PFD?\n', '%s','%i') / 1e3; % has to be correct; otherwise the PLL registers are crap
 fmax  = 14000;
 maxpts = 101; % maximum number of points
-tpause = [0.3, 2, 0.1]; % s pause time [linear, list, #pts]
+tpause = [0.3, 3, 0.2]; % s pause time [linear, list, #pts]
 
-% several runs
+% program a few sweeps and test the results
 clc;
 for i = 1 : 25
    % random start, step, stop (multiples of fchan; but we don't care if fstart and fstop are multiples of fstep apart)
@@ -187,193 +187,111 @@ for i = 1 : 25
    if str2double(reply{end})<length(f); error('--- STOP: #pts ---'); end
 end
 
-   
-fprintf(ard, 'PLL:REGVALS?'); pause(tpause(2));
-reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
-for ri=1:length(reply); disp(reply{ri}); end
 
-while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+
+% *********************************
+% LONG COMMAND (MANUAL TESTING)
+
+% open device connection
+ard = serial('/dev/ttyACM1', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
+fopen(ard);
+fclose(ard);
+
+cmd = 'SWEEP:LIST 12425,10265,11645,11885,12905,10625,11105,9965';
+fprintf(ard, cmd);
+
+cmd = 'SWEEP:LIST 12425,10265,11645,11885,12905,10625,11105,9965,9005,11285,9425,9785,9065,12365,10145,9245,12125,11525,9125,12545,12245,12305,10325,10445,11345,12185,10565,8285,11165,8345,11825,11765,11945,11705,12485,8465,10025,9845,11045,12665,10385,10085,8705,9905,9725,8525,9665,8825,12845,10505,12005,10205,8765,10745,10805,10865,8585,9365,10925,9185,11465,11225,10985,9485,8405,8945,12605,9545,10685,12725,8885,8645,9605,11405,12785,9305,12065,11585';
+fprintf(ard, cmd);
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
+
 
 
 
 % *******************************************************************************************************
+% MANUALLY TEST COMMANDS
+
+% *********************************
 % "RUN" COMMANDS
 
-% panel sweep
 fprintf(ard, 'RUN:PANELS');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-% frequency sweep
 fprintf(ard, 'RUN:FREQ');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-% continuous panel sweep
 fprintf(ard, 'CONT:PANELS');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-% frequency sweep
 fprintf(ard, 'CONT:FREQ');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-% stop continuous sweep
-%     option 1
 fprintf(ard, 'STOP');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-%     option 2
-fprintf(ard, 'SINGLE'); 
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
+fprintf(ard, 'SINGLE');
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 
-
-% *******************************************************************************************************
+% *********************************
 % "QUERY" COMMANDS
 
 fprintf(ard, 'PLL:PFD?');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
 fprintf(ard, 'TIME:DWELL?');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
 fprintf(ard, 'TIME:PAUSE?');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
 fprintf(ard, 'SWEEP:POINTS?');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
+fprintf(ard, 'SWITCH:STATES?');
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
+% PLL register values
+fprintf(ard, 'SWEEP:DEFAULT'); pause(0.1);
+fprintf(ard, 'PLL:REGVALS?');
 
 
-
-% *******************************************************************************************************
+% *********************************
 % SET COMMANDS
 
+fprintf(ard, sprintf('PLL:PFD %i', randi([1000, 5000])));
+fprintf(ard, 'PLL:PFD?');
+
+fprintf(ard, sprintf('TIME:DWELL %i', randi([500, 15000])));
+fprintf(ard, 'TIME:DWELL?');
+
+fprintf(ard, sprintf('TIME:PAUSE %i', randi([500, 15000])));
+fprintf(ard, 'TIME:PAUSE?');
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 
+% *********************************
+% CHECK IF CHANGING SWEEP CORE PARAMETERS RESETS THE SWEEP
 
-fprintf(ard, 'TIME:DWELL 1234');
-pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
+% PFD frequency
+fprintf(ard, 'SWEEP:DEFAULT');
+fprintf(ard, 'SWEEP:POINTS?');
+fprintf(ard, sprintf('PLL:PFD %i', randi([1000, 5000])));
+fprintf(ard, 'SWEEP:POINTS?');
 
-query(ard, 'TIME:DWELL?\n', '%s','%i')
-
-
-
-
-
-
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 
+% *********************************
+% CHECK IF CHANGING SWEEP CORE PARAMETERS RESETS THE SWEEP
 
-  //     PFD frequency (set and query)
-  else if (serial_cmd == "PLL:PFD") { 
-    pll_reset_sweep(); // reset sweep (register values need to be recalculated)
-    serial_parse_next_token(); // get value from buffer
-    PFDFreq = serial_val; // update PFD frequency
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(PFDFreq);
-  }
-  else if (serial_cmd == "PLL:PFD?") {
-    Serial.println(PFDFreq);
-  } 
-  //     dwell time (set and query)
-  else if (serial_cmd == "TIME:DWELL") {
-    serial_parse_next_token(); // get value from buffer
-    sweep_dwell_time = serial_val; // update time
-    check_sweep_timing(); // check new timing
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(sweep_dwell_time);
-  } 
-  else if (serial_cmd == "TIME:DWELL?") {
-    Serial.println(sweep_dwell_time);
-  } 
-  //     update pause time between sweeps
-  else if (serial_cmd == "TIME:PAUSE") {
-    serial_parse_next_token(); // get value from buffer
-    sweep_pause_time = serial_val; // update time
-    check_sweep_timing(); // check new timing
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(sweep_pause_time);
-  } 
-  else if (serial_cmd == "TIME:PAUSE?") {
-    Serial.println(sweep_pause_time);
-  } 
-  //     program standard sweep
-  else if (serial_cmd == "SWEEP:DEFAULT") {
-    pll_reset_sweep(); // reset old sweep
-    pll_set_linear_sweep(SWEEP_DEFAULT_FSTART, SWEEP_DEFAULT_FSTEP,  SWEEP_DEFAULT_FSTOP);
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
-  }
-  //     program linear sweep [min:step:max]
-  else if (serial_cmd == "SWEEP:LIN") { 
-    pll_reset_sweep(); // reset sweep (register values need to be recalculated)
-    // get start, step, stop values from buffer
-    int fstart = 0;
-    int fstep = 0;
-    int fstop = 0;
-    if (serial_parse_next_token()) {
-      fstart = serial_val;
-    } 
-    else {
-      Serial.println("Start value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
-    }
-    if (serial_parse_next_token()) {
-      fstep = serial_val;
-    } 
-    else {
-      Serial.println("Step value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
-    }
-    if (serial_parse_next_token()) {
-      fstop = serial_val;
-    } 
-    else {
-      Serial.println("Stop value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
-    }
-    // send feedback
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd);
-    Serial.print(" "); 
-    Serial.print(fstart); 
-    Serial.print(":"); 
-    Serial.print(fstep); 
-    Serial.print(":"); 
-    Serial.println(fstop);
-    // program sweep
-    pll_set_linear_sweep(fstart, fstep, fstop);
-  }
-  //     program new list sweep
-  else if (serial_cmd == "SWEEP:LIST") { 
-    pll_reset_sweep(); // reset old sweep
-    // send feedback
-    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
-    // update sweep
-    while (serial_parse_next_token()) { // while there are new values in the buffer ...
-      pll_add_sweep_frequency(serial_val); // ... add them to the sweep
-    }
-  }
-  //    select specific switch port (ports # start at 1)
-  else if (serial_cmd == "SWITCH:SELECT") {
-    serial_parse_next_token(); // get value from buffer
-    switch_chain_selectfeed(serial_val); // switch on this feed
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(serial_val);
-  } 
-  //    get number of frequencies in sweep
-  else if (serial_cmd == "SWEEP:POINTS?") {
-    Serial.println(num_freq);
-  } 
-  //    get PLL register values
-  else if (serial_cmd == "PLL:REGVALS?") {
-    for(int i = 0; i < num_freq; i++) {
-      Serial.print("|");
-      Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
-      Serial.print("|");
-      Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
-      Serial.print("|");
-      Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
-      Serial.println(" ");
-    }  
-  } 
-  //    unrecognized command; throw an error
-  else {
-    Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print("Unrecognized command ");
-    Serial.println(serial_cmd);
-  }
-  // reset command buffer
-  serial_reset_cmd_interface();
+% random switch states
+sw_states = randi([0, 255], [1,3]);
+fprintf(ard, sprintf('SWITCH:STATES %i,%i,%i', sw_states));
+fprintf(ard, 'SWITCH:STATES?');
+disp(sw_states);
+
+% running light
+for i = 1 : 1 : 3 * 6
+   fprintf(ard, sprintf('SWITCH:SELECT %i', i));
+   fprintf(ard, 'SWITCH:STATES?');
+   pause(0.1);
+end
+
+% reset
+fprintf(ard, 'SWITCH:STATES 0,0,0');
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
