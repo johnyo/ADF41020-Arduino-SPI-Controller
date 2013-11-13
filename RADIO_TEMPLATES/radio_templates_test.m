@@ -12,7 +12,7 @@ clear; close all; clc; pause(0.01);
 return
 
 % open device connection
-ard = serial('/dev/ttyACM0', 'Baud',9600, 'Terminator','LF', 'InputBuffersize',2048, 'OutputBuffersize',2048);
+ard = serial('/dev/ttyACM0', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
 fopen(ard);
 
 % close device connection
@@ -26,11 +26,12 @@ fclose(ard);
 % IMPORTANT: reset Arduino before starting this test!
 
 % settings
-str_len = 1200; % bytes maximum length (choose slightly larger than SERIAL_INBUF_SIZE)
+str_len = 700; % bytes maximum length (choose slightly larger than SERIAL_INBUF_SIZE)
 char_set = [0, 255]; % all 1-byte characters (this might cause problems after some time)
 char_set = [48, 122]; % 0-9, a-z, A-Z, and a few special characters
 char_set = [32, 126]; % all printable ASCII
-err_msg = 'ERROR -- Unrecognized command';
+err_msg1 = 'ERROR -- Unrecognized command';
+err_msg2 = 'ERROR -- Input buffer overrun. Resetting.';
 
 % run random commands, check if Arduino reacts with error message
 for i = 1 : 25
@@ -50,7 +51,7 @@ for i = 1 : 25
       reply = strtrim(fgetl(ard));
    end
    % check
-   if ~isempty(strfind(reply, err_msg))
+   if ~isempty(strfind(reply, err_msg1)) || ~isempty(strfind(reply, err_msg2))
       fprintf('Test %3i, len=%4i:   OK (received error message)\n', i, length(str));
    else
       fprintf('Test %3i, len=%4i:   WARNING (received truncated or corrupted error message)\n', i, length(str));
@@ -124,99 +125,75 @@ flushinput(ard);
 flushoutput(ard);
 
 % linear sweep (PFD has to be correct => load from Arduino)
-fmin  = 10000;
+fmin  =  7000;
 fchan = 4 * query(ard, 'PLL:PFD?\n', '%s','%i') / 1e3; % has to be correct; otherwise the PLL registers are crap
-fmax  = 15000;
-maxpts = 91; % maximum number of points
-tpause = 0.5; % s pause time
+fmax  = 14000;
+maxpts = 101; % maximum number of points
+tpause = [0.3, 3, 0.1]; % s pause time [linear, list, #pts]
 
 % several runs
-clc
-for i = 1 : 10
-   % reset
-   reply = '';
+clc;
+for i = 1 : 25
    % random start, step, stop (multiples of fchan; but we don't care if fstart and fstop are multiples of fstep apart)
    fstart = round((fmin + rand * (fmax-fmin)) / fchan) * fchan;
-   fstep  = round( max(fchan, min((fmax-fmin)/(maxpts-1), rand*(fmax-fmin)/2)) /fchan) * fchan;
    fstop  = round((fmax - rand * (fmax-fmin)) / fchan) * fchan;
-   if fstart > fstop
-      tmp = fstart; fstart = fstop; fstop = tmp;
-   end
+   if fstart > fstop; tmp = fstart; fstart = fstop; fstop = tmp; end
+   fstep = (1 + round((fstop-fstart)/randi([1,maxpts-2]) / fchan)) * fchan;
    % calculate frequency vector
    f = fstart : fstep : fstop;
    % quick checks
    if round(fstep/fchan) ~= fstep/fchan || length(f) > maxpts
-      disp('PROBLEMS...');
+      error('Problems with frequency vector generation.');
       continue;
    end
    % output
    fprintf('\n%3i  -  %5i : %4i : %5i MHz   (%3i values)\n', i, fstart,fstep,fstop, length(f));
    
-   % program this sweep as linear sweep 
-   cmd = sprintf('      SWEEP:LIN %i,%i,%i',fstart,fstep,fstop);
-   fprintf(ard, cmd);
-   fprintf('%s%s  |', cmd, repmat(' ',1,80-length(cmd)));
-   pause(tpause); 
-   %     get reply from buffer and check
-   if ard.BytesAvailable > 0
-      reply = strtrim(fgetl(ard));
-   end
-   if ~isempty( strfind(reply, sprintf('OK -- SWEEP:LIN %i:%i:%i',fstart,fstep,fstop)) )
-      fprintf('  reply: OK    |');
-   else
-      fprintf('  reply: ERROR |');
-      disp(reply);
-   end
-   %     check number of frequencies
+   % program this sweep as linear sweep
+   cmd = sprintf('SWEEP:LIN %i,%i,%i',fstart,fstep,fstop);
    flushinput(ard);
-   npts = query(ard, 'SWEEP:POINTS?\n', '%s','%i');
-   if npts == length(f)
-      fprintf('  #pts: OK    \n');
-   else
-      fprintf('  #pts: ERROR  (has %i, should be %i) \n', npts, length(f));
-   end
+   fprintf(ard, cmd);
+   fprintf('      %s%s  |', cmd, repmat(' ',1,80-length(cmd)));
+   pause(tpause(1));
+   %     reply (plus get any debug information)
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   if ~strcmpi(reply{end}, ['OK -- ',regexprep(cmd,',',':')]); error('--- STOP: HANDSHAKE ---'); end
+   fprintf(' %s%s |', reply{end}, repmat(' ',1,60-length(reply{end})));
+   %     number of frequencies
+   flushinput(ard);
+   fprintf(ard, 'SWEEP:POINTS?');
+   pause(tpause(3));
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   fprintf(' #PTS: %s%s\n', reply{end}, repmat(' ',1,20-length(reply{end})));
+   if str2double(reply{end})<length(f); error('--- STOP: #pts ---'); end
    
-   % program this sweep as list sweep 
-   cmd = sprintf('      SWEEP:LIST %s', sprintf('%i,', f)); cmd(end) = [];
-   fprintf(ard, cmd);
-   if length(cmd) <= 80
-      fprintf('%s%s  |', cmd, repmat(' ',1,80-length(cmd)));
-   else
-      fprintf('%s...%s  |', cmd(1:min(77, length(cmd))), repmat(' ',1,77-min(77,length(cmd))));
-   end
-   %     give the Arduino time to process this
-   pause(tpause);
-   %     get reply from buffer and check
-   if ard.BytesAvailable > 0
-      reply = strtrim(fgetl(ard));
-   end
-   if ~isempty( strfind(reply, 'OK -- SWEEP:LIST') )
-      fprintf('  reply: OK    |');
-   else
-      fprintf('  reply: ERROR |');
-      disp(reply);
-   end
-   %     check number of frequencies
+   % program this sweep as randomized list sweep
+   f = f(randperm(length(f)));
+   cmd = sprintf('SWEEP:LIST %s', sprintf('%i,', f)); cmd(end) = [];
    flushinput(ard);
-   npts = query(ard, 'SWEEP:POINTS?\n', '%s','%i');
-   if npts == length(f)
-      fprintf('  #pts: OK    \n');
-   else
-      fprintf('  #pts: ERROR  (has %i, should be %i) \n', npts, length(f));
-   end
+   fprintf(ard, cmd);
+   fprintf('      %s%s  |', cmd(1:min(80,length(cmd))), repmat(' ',1,80-min(80,length(cmd))));
+   pause(tpause(2));
+   %     reply (plus get any debug information)
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   if ~strcmpi(reply{end}, 'OK -- SWEEP:LIST'); error('--- STOP: HANDSHAKE ---'); end
+   fprintf(' %s%s |', reply{end}, repmat(' ',1,60-length(reply{end})));
+   %     number of frequencies
+   flushinput(ard);
+   fprintf(ard, 'SWEEP:POINTS?');
+   pause(tpause(3));
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   fprintf(' #PTS: %s%s\n', reply{end}, repmat(' ',1,20-length(reply{end})));
+   if str2double(reply{end})<length(f); error('--- STOP: #pts ---'); end
 end
 
-
-
-
-fprintf(ard, cmd)
-pause(1); while ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-fprintf(ard, 'SWEEP:POINTS?')
-pause(1); while ard.BytesAvailable > 0; disp(fgetl(ard)); end
-
-
+   
 fprintf(ard, 'PLL:REGVALS?')
+reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+for ri=1:length(reply); disp(reply{ri}); end
+
+while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+
 
 
 % *******************************************************************************************************

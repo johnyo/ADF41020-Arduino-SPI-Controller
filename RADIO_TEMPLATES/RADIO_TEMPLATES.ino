@@ -7,6 +7,19 @@
 
 /* TODO: implement PLL R-counter check */
 
+/* *************************************/
+/* IMPORTANT -- IMPORTANT -- IMPORTANT */
+/* *************************************
+  Due to the limited SRAM size, string constants - in particular in Serial.println("YOUR STRING") - should be enclosed 
+  by an F() function. This function will keep the string from getting copied into SRAM:
+  http://learn.adafruit.com/memories-of-an-arduino/optimizing-sram
+  
+  If the code fails with unexplicable and seemingly random errors, check for SRAM problems! In this code, for example,
+  serial_inbuf is one of the prime candidates for corruption due to this problem.
+*/
+
+
+
 // Libraries
 #include <SPI.h>
 #include <SoftwareSerial.h>
@@ -31,8 +44,28 @@
 #define SYNC_SIGNAL_STARTSTEP 256 // start of step
 #define SYNC_SIGNAL_RESET 0 // default
 
+/* SWITCHES */
+#define SWITCH_NUM_PORTS 6 // number of ports per switch
+#define SWITCH_NUM_SWITCHES 3 // number of switches
+
+/* SWEEP / PLL  */
+/*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
+#define MAX_NUM_FREQ 101 // maximum number of frequencies
+#define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
+/*    timing parameters (approximate; plus execution time) */
+#define PULSE_DURATION 250 // sync signaling pulse duration in microseconds (must be smaller than sweep_dwell_time/2)
+#define DWELL_TIME 500 // ms default dwell time (can be changed)
+#define SWEEP_PAUSE 15000  // pause between sweeps in microseconds (e.g, for switching time)
+#define LONG_PAUSE 200 // pause in milliseconds (if needed)
+/*    default sweep (linear) */
+#define SWEEP_DEFAULT_PFDFREQ 1250 // kHz default PFD Frequency
+#define SWEEP_DEFAULT_FSTART 10415 // MHz start frequency
+#define SWEEP_DEFAULT_FSTEP     45 // MHz frequency step
+#define SWEEP_DEFAULT_FSTOP  13070 // MHz stop frequency
+
 /* SERIAL COMMAND INTERFACE */
-#define SERIAL_INBUF_SIZE 1024 // bytes serial input buffer
+#define SERIAL_BAUD_RATE 19200 // bit/sec on serial interface (4800,9600,14400,19200,28800,38400,57600,115200)
+#define SERIAL_INBUF_SIZE MAX_NUM_FREQ*6 + 24 // bytes serial input buffer (6 char per value plus two dozen for commands)
 #define SERIAL_EOL '\n' // end-of-line terminator for serial interface
 #define SERIAL_SEP_C2V ' ' // separator between command and value(s)
 #define SERIAL_SEP_V2V ',' // separator between two values
@@ -48,31 +81,13 @@ unsigned int localPort = 5025; // standard SCPI port is 5025
 EthernetServer eth_server(localPort);
 */
 
-/* SWITCHES */
-#define SWITCH_NUM_PORTS 6 // number of ports per switch
-#define SWITCH_NUM_SWITCHES 3 // number of switches
-
-/* SWEEP  */
-/*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
-#define MAX_NUM_FREQ 101 // maximum number of frequencies
-#define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
-/*    timing parameters (approximate; plus execution time) */
-#define PULSE_DURATION 250 // sync signaling pulse duration in microseconds (must be smaller than sweep_dwell_time/2)
-#define DWELL_TIME 500 // ms default dwell time (can be changed)
-#define SWEEP_PAUSE 15000  // pause between sweeps in microseconds (e.g, for switching time)
-#define LONG_PAUSE 200 // pause in milliseconds (if needed)
-/*    default sweep (linear) */
-#define SWEEP_DEFAULT_FSTART 10415 // MHz start frequency
-#define SWEEP_DEFAULT_FSTEP     45 // MHz frequency step
-#define SWEEP_DEFAULT_FSTOP  13070 // MHz stop frequency
-
 /* MISC */
 #define HALT_IF_ERROR false // stop execution in case of errors
 
 /* GLOBAL VARIABLES */
 /*    frequency sweep and PLL control */
-long PFDFreq = 1250; // PFD Frequency in MHz ("channel spacing")
-int  num_freq = 0; // actual number of frequencies
+unsigned long PFDFreq = SWEEP_DEFAULT_PFDFREQ; // PFD Frequency in MHz ("channel spacing")
+unsigned int  num_freq = 0; // actual number of frequencies
 byte F2 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F1 = 0; // PLL 24-bit function register, [F2,F1,F0]
 byte F0 = 0; // PLL 24-bit function register, [F2,F1,F0]
@@ -85,8 +100,8 @@ byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 /*    sweep timing */
 boolean continuous_run_panels = false; // continuous run, all panels (including switches)
 boolean continuous_run_frequency = false; // continuous frequency sweep (current switch only)
-int sweep_dwell_time = DWELL_TIME; // dwell time at each step in microseconds
-int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
+unsigned int sweep_dwell_time = DWELL_TIME; // dwell time at each step in microseconds
+unsigned int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
 /*    serial command interace */
 String  serial_cmd = ""; //
 int     serial_val = 0; // 
@@ -94,7 +109,7 @@ String  serial_inbuf = "";  // serial input buffer (CMD VAL1,VAL2,...)
 boolean serial_inbuf_complete = false; // command complete (EOL reached)?
 /*    switches */
 byte switch_states[SWITCH_NUM_SWITCHES] = {}; // state of all switches in chain (binary)
-int  switch_port_active = 0; // currently active port in switch chain (0 ... #switches * #ports - 1)
+byte switch_port_active = 0; // currently active port in switch chain (0 ... #switches * #ports - 1)
 byte switch_port_mask = (1 << (SWITCH_NUM_PORTS + 1)) - 1; // port mask (ones up to SWITCH_NUM_PORTS, zeros otherwise)
 
 
@@ -105,7 +120,7 @@ byte switch_port_mask = (1 << (SWITCH_NUM_PORTS + 1)) - 1; // port mask (ones up
 void setup() {
 
   // Initialize serial port (debugging and control)
-  Serial.begin(9600);
+  Serial.begin(SERIAL_BAUD_RATE);
   // Reserve memory for serial input string buffer
   serial_inbuf.reserve(SERIAL_INBUF_SIZE);
   // Reset command interface
@@ -150,15 +165,15 @@ void setup() {
 void loop() {
 
   /* SWITCHES + PLL + CONTROL SIGNALS + SERIAL CONTROL INTERFACE */
-  /*    WAITS FOR "RUN" COMMANDS */
   // serial command interface
-  //    check if there's new data available on the command interface
-  if (Serial.available() > 0){
-    serial_input();
-  }
   //    if command is complete: parse, decode, and reset interface
-  if (serial_inbuf_complete){
+  if (serial_inbuf_complete) {
     serial_command_decode();
+  //    otherwise: check if new data is available, process if that's the case
+  } else {
+    if (Serial.available() > 0){
+      serial_input();
+    }
   }
   // continuous run modes
   if (continuous_run_panels) {
@@ -179,7 +194,7 @@ void loop() {
 // sweep: run panel sweep (measurement) / cycle through switches
 void run_panel_sweep() {
   // cycle through all ports
-  for(int i = 0; i < (SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 2); i++) {
+  for(unsigned int i = 0; i < (SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 2); i++) {
     // next switch port
     if (i == 0) {
       switch_chain_init();
@@ -205,7 +220,7 @@ void run_panel_sweep() {
 // sweep: cycle through frequencies
 void run_frequency_sweep() {
   // run sweep 
-  for(int i = 0; i < num_freq; i++) {
+  for(unsigned int i = 0; i < num_freq; i++) {
     // program PLL
     // TODO: also update R-counter if necessary
     spi_pll_adf40120(N2[i], N1[i], N0[i]);
@@ -227,24 +242,24 @@ void run_frequency_sweep() {
 // FREQUENCY SWEEP FUNCTIONS
 //############################################################
 // populate frequency vector; linear sweep
-void pll_set_linear_sweep(int fstart, int fstep, int fstop) {
+void pll_set_linear_sweep(unsigned int fstart, unsigned int fstep, unsigned int fstop) {
   // reset number of frequencies
   num_freq = 0;
   // do a quick sanity check
   if ((fstop < fstart) || (fstep == 0) || ((fstop-fstart)/fstep + 1 > MAX_NUM_FREQ)) {
     Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print("Incorrect linear sweep parameters. Ignoring.");
+    Serial.print(F("Incorrect linear sweep parameters. Ignoring."));
     return;
   }
   // populate frequency vector (PLL register values)
-  for (int curr_freq = fstart; curr_freq <= fstop; curr_freq += fstep) {
+  for (unsigned int curr_freq = fstart; curr_freq <= fstop; curr_freq += fstep) {
     pll_adf40120_addfreq(curr_freq, num_freq);
     num_freq++;
   } 
 }
 //############################################################
 // add another frequency step to the sweep
-void pll_add_sweep_frequency(int freq) {
+void pll_add_sweep_frequency(unsigned int freq) {
   pll_adf40120_addfreq(freq, num_freq);
   num_freq++;
 }
@@ -260,9 +275,9 @@ void check_sweep_timing() {
   if (2*PULSE_DURATION > sweep_dwell_time) {
     sweep_dwell_time = 2 * PULSE_DURATION;
     Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print("Dwell time must be larger or equal to 2 * PULSE_DURATION = ");
+    Serial.print(F("Dwell time must be larger or equal to 2 * PULSE_DURATION = "));
     Serial.print(sweep_dwell_time);
-    Serial.println(" us. Setting to this value.");
+    Serial.println(F(" us. Setting to this value."));
   }
 }
 
@@ -277,13 +292,6 @@ void serial_command_decode() {
   // get command from buffer
   serial_parse_next_token(true);
   serial_cmd.toUpperCase();
-  
-  /*
-  Serial.print("BUF |"); // [DEBUG]
-  Serial.print(serial_inbuf); // [DEBUG]
-  Serial.println("|"); // [DEBUG]
-  */
-  
   // decode command
   //    run frequency sweep for all panels (single)
   if (serial_cmd == "RUN:PANELS") {
@@ -365,27 +373,27 @@ void serial_command_decode() {
       fstart = serial_val;
     } 
     else {
-      Serial.println("Start value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+      Serial.println(F("Start value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>"));
     }
     if (serial_parse_next_token(false)) {
       fstep = serial_val;
     } 
     else {
-      Serial.println("Step value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+      Serial.println(F("Step value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>"));
     }
     if (serial_parse_next_token(false)) {
       fstop = serial_val;
     } 
     else {
-      Serial.println("Stop value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>");
+      Serial.println(F("Stop value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>"));
     }
     // send feedback
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd);
-    Serial.print(" "); 
+    Serial.print(F(" ")); 
     Serial.print(fstart); 
-    Serial.print(":"); 
+    Serial.print(F(":")); 
     Serial.print(fstep); 
-    Serial.print(":"); 
+    Serial.print(F(":")); 
     Serial.println(fstop);
     // program sweep
     pll_set_linear_sweep(fstart, fstep, fstop);
@@ -415,19 +423,19 @@ void serial_command_decode() {
   //    get PLL register values
   else if (serial_cmd == "PLL:REGVALS?") {
     for(int i = 0; i < num_freq; i++) {
-      Serial.print("|");
+      Serial.print(F("|"));
       Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
-      Serial.print("|");
+      Serial.print(F("|"));
       Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
-      Serial.print("|");
+      Serial.print(F("|"));
       Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
-      Serial.println(" ");
+      Serial.println(F(" "));
     }  
   } 
   //    unrecognized command; throw an error
   else {
     Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print("Unrecognized command: ");
+    Serial.print(F("Unrecognized command: "));
     Serial.println(serial_cmd);
   }
   // reset command buffer
@@ -437,14 +445,14 @@ void serial_command_decode() {
 // parse string and return the next token (command string - whitespace - comma separated list of values)
 //    returns true if a new token was found; false if not
 boolean serial_parse_next_token(boolean iscmd) {
+  //Serial.print(F("BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   // split index in string
   int ind_sep = 0;
   // check if buffer is already empty
   if (serial_inbuf.length() == 0){
-    //Serial.println("BUFFER IS EMPTY");
+    //Serial.println(F("BUFFER IS EMPTY"));
     return false;
   }
-  //Serial.print("BUFFER: "); Serial.println(serial_inbuf);
   // next token is a command
   if (iscmd) {
     ind_sep = serial_inbuf.indexOf(SERIAL_SEP_C2V); // find command-value separator
@@ -452,23 +460,24 @@ boolean serial_parse_next_token(boolean iscmd) {
       ind_sep = serial_inbuf.length();
     }
     serial_cmd = serial_inbuf.substring(0,ind_sep); // -> command string
-    //Serial.println("COMMAND: " + serial_cmd);
+    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    //Serial.println(F("COMMAND: ") + serial_cmd);
   }
-  // next token is a value (command already decoded)
+  // next token is an integer value
   else {
     ind_sep = serial_inbuf.indexOf(SERIAL_SEP_V2V); // find value-value separator
     if(ind_sep < 0){ // last value might not be terminated with SERIAL_SEP_V2V
       ind_sep = serial_inbuf.length();
     }
     serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
-    //Serial.print("VALUE: "); Serial.println(serial_val);
+    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    //Serial.print(F("VALUE: "); Serial.println(serial_val);
   }
-  //Serial.print("SEPARATOR POSITION: "); Serial.println(ind_sep);
   // remove decoded token plus separator
-  serial_inbuf.replace(serial_inbuf.substring(0,ind_sep+1), ""); // replace substring with empty string
+  serial_inbuf.replace(serial_inbuf.substring(0,ind_sep+1), ""); // replace substring with empty string   [TODO] better way?
   // get rid of any whitespaces
   serial_inbuf.trim();
-  //Serial.print("REMAINING BUFFER: "); Serial.println(serial_inbuf);
+  //Serial.print(F("REMAINING BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   return true;
 }
 //############################################################
@@ -478,7 +487,7 @@ void serial_input() {
     // prevent buffer overruns
     if (serial_inbuf.length() >= SERIAL_INBUF_SIZE) {
       Serial.print(SERIAL_HANDSHAKE_ERR);
-      Serial.println("Input buffer overrun. Resetting.");
+      Serial.println(F("Input buffer overrun. Resetting."));
       serial_reset_cmd_interface();
     }
     // get the new character
@@ -489,10 +498,17 @@ void serial_input() {
       serial_inbuf.trim();
       // and set the completion flag
       serial_inbuf_complete = true;
+      //Serial.print(F("FINAL INBUF (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
     }
     else
     {
-      serial_inbuf += inChar; // otherwise, add the new character to the input buffer
+      // otherwise: check if the new character ist printable and
+      //            add it to the input buffer
+      if (ascii_isprintable(inChar)) {
+        serial_inbuf += inChar;
+      } else {
+        // do nothing for now; could add an error / buffer reset later
+      }
     } 
   }
 }
@@ -504,6 +520,12 @@ void serial_reset_cmd_interface() {
   serial_inbuf = "";
   serial_inbuf_complete = false;
 }
+//############################################################
+// is an ASCII character printable (decimal 32-126)
+char ascii_isprintable(char c) {
+  return (c > 31) && (c < 127);
+}
+
 
 
 //############################################################
@@ -523,7 +545,16 @@ void pulse_sync_signal(int signal) {
 // (copied and modified from ADF41020 host software)
 // TODO: FIND OUT WHY SOME SETTINGS ARE UNUSED
 void pll_adf40120_addfreq(int RFout, int i) {
-  // device configuration; please refer to ADF41020 datasheet
+  // prevent adding too many frequencies
+  if (i >= MAX_NUM_FREQ - 1) {
+    Serial.print(SERIAL_HANDSHAKE_ERR);
+    Serial.print(F("Reached maximum number of frequencies ("));
+    Serial.print(MAX_NUM_FREQ);
+    Serial.println(F(")."));
+    return;
+  }
+  
+  // basic device configuration; please refer to ADF41020 datasheet
   int  Prescaler = 1; // prescaler value (00: 8/9, 16/17, 32/33, 11:64/65)
   byte CPsetting1 = 3; // charge pump 1 setting (see manual)
   byte CPsetting2 = 3; // charge pump 2 setting (see manual)
@@ -569,20 +600,20 @@ void pll_adf40120_addfreq(int RFout, int i) {
   // Debug output
   /*
   Serial.print(RFout);
-   Serial.print("|");
+   Serial.print(F("|"));
    Serial.print(((long)F2)    << 16 | ((long)F1)    << 8 | (long)F0, HEX);
-   Serial.print("|");
+   Serial.print(F("|"));
    Serial.print(((long)R2)    << 16 | ((long)R1[i]) << 8 | (long)R0[i], HEX);
-   Serial.print("|");
+   Serial.print(F("|"));
    Serial.print(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
-   Serial.println(" ");
+   Serial.println(F(" "));
    */
 }   
 //############################################################
 // reset switch chain
 void switch_chain_reset() {
   // reset states
-  for(int i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
     switch_states[i] = 0;
   }
   switch_port_active = 0;
@@ -593,7 +624,7 @@ void switch_chain_reset() {
 // initialize switch chain (set first switch)
 void switch_chain_init() {
   // reset states
-  for(int i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
     switch_states[i] = 0;
   }
   // activate first switch
@@ -609,7 +640,7 @@ void switch_chain_next() {
   byte co_this = 0; // this switch
   byte co_last = 0; // last switch
   // activate next switch by shifting states
-  for(int i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
     // save MSB state / carry-over
     co_last = co_this;
     co_this = switch_states[i] >> SWITCH_NUM_PORTS;
@@ -639,9 +670,9 @@ void switch_chain_selectfeed(int feed) {
 //############################################################
 // output switch states (binary)
 void switch_chain_output_states() {
-   for(int i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
+   for(byte i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
      Serial.print(switch_states[i], BIN); 
-     Serial.print(" ");
+     Serial.print(F(" "));
    }
    Serial.println(switch_states[SWITCH_NUM_SWITCHES - 1], BIN);
 }
