@@ -8,9 +8,13 @@
 % *******************************************************************************************************
 
 % init
-clear; close all; clc; pause(0.01); 
-[~, path] = system('locate radio_templates_test.m');
-cd(fileparts(path)); addpath('./..');
+clear; close all; clc; pause(0.01);
+
+% paths
+addpath('~/paris-osf/'); globalinit('silent');
+addpath('~/Duke/Matlab/Library/system'); 
+recaddpath('~/Duke/Matlab');
+recaddpath('~/ReynoldsLab/Git-Arduino');
 return
 
 % open device connection
@@ -19,6 +23,69 @@ fopen(ard);
 
 % close device connection
 fclose(ard);
+
+
+
+
+
+
+
+% *******************************************************************************************************
+% CHECK AD41020 CONTROL / PLL FREQUENCIES
+
+% Arduino
+%     basic setup
+fprintf(ard, 'TIME:DWELL 15383');
+fprintf(ard, 'TIME:PULSE  7500');
+fprintf(ard, 'TIME:PAUSE     0');
+%     "run" commands
+fprintf(ard, 'RUN:FREQ');
+fprintf(ard, 'CONT:FREQ');
+fprintf(ard, 'STOP');
+%     display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
+% expected PLL frequencies
+fprintf(ard, 'SWEEP:DEFAULT');
+f_pll = 10415e6 : 45e6 : 13070e6;
+
+% EXA signal analyzer (semi-automatic)
+exa = exa_n9010a_ctrl('192.168.1.97', 'open', 1e6);
+exa_n9010a_ctrl(exa, 'set-ampl-reflevel', 10);
+exa_n9010a_ctrl(exa, 'set-freq-start-stop', [f_pll(1) - 5*diff(f_pll(1:2)), f_pll(end) + 5*diff(f_pll(1:2))]);
+exa_n9010a_ctrl(exa, 'set-hold', 'clear');
+exa_n9010a_ctrl(exa, 'set-numpoints', 20001); % highest res possible
+%     frequency vector
+f_meas = exa_n9010a_ctrl(exa, 'get-freq'); 
+f_meas = linspace(f_meas(1), f_meas(2), exa_n9010a_ctrl(exa, 'get-numpts'));
+f_res  = diff(f_meas(1:2));
+
+% set to continuous run and max-hold
+fprintf(ard, 'CONT:FREQ'); pause(0.1);
+exa_n9010a_ctrl(exa, 'set-hold', 'clear');
+exa_n9010a_ctrl(exa, 'set-hold', 'max');
+%     ... wait until the spectrum is fully filled, then transfer data
+pause(25); 
+psd = exa_n9010a_ctrl(exa, 'get-trace-data', 1);
+%     extract peak power level
+[pwr, ind] = findpeaks(psd, 'minpeakheight',-10, 'npeaks',numel(f_pll), 'minpeakdistance', round(mean(diff(f_pll))/mean(diff(f_meas)) * 0.8));
+
+% plots
+%     frequency offset
+close all; figure; hold on;
+plot(f_pll/1e9, (f_pll - f_meas(ind))/1e3);
+plot(f_pll/1e9, -ones(size(f_pll)) * f_res/1e3, 'r--');
+plot(f_pll/1e9,  ones(size(f_pll)) * f_res/1e3, 'r--');
+plot(f_pll/1e9, zeros(size(f_pll)), 'k-');
+hold off; grid on; xlim(xyzlimits(f_pll)/1e9); ylim(xyzlimits((f_pll-f_meas(ind)), f_res, -f_res)/1e3);
+setlabels('ACCURACY OF SET SYNTHESIZER FREQUENCY (ADF41020, Arduino controlled)', 'f_{set,PLL} [GHz]', 'f_{set,PLL} - f_{meas} [kHz]');
+setlegend({'measurement', '+/- FFT resolution'}, 'NorthEast');
+
+%     power levels
+close all; figure; plot(f_meas(ind)/1e9, pwr);
+hold off; grid on; xlim(xyzlimits(f_meas(ind))/1e9); ylim(xyzlimits(pwr));
+setlabels('SYNTHESIZER OUTPUT POWER (ADF41020, Arduino controlled)', 'f [GHz]', 'power [dBm]');
+
 
 
 
@@ -79,8 +146,8 @@ pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
 
 % command list
 cmd_list = {'RUN:PANELS', 'RUN:FREQ', 'CONT:PANELS', 'CONT:FREQ', 'STOP', 'SINGLE',...
-   'PLL:PFD %i', 'PLL:PFD?', 'TIME:DWELL 500', 'TIME:DWELL?', 'TIME:PAUSE %i', 'TIME:PAUSE?', 'SWEEP:POINTS?'...
-   'SWEEP:DEFAULT', 'SWEEP:LIN %i,%i,%i', 'SWEEP:LIST %i,%i,%i,%i,%i,%i,%i,%i,%i,%i', ...
+   'PLL:PFD %i', 'PLL:PFD?', 'TIME:DWELL 500', 'TIME:DWELL?', 'TIME:PAUSE %i', 'TIME:PAUSE?', 'TIME:PULSE %i', 'TIME:PULSE?',...
+   'SWEEP:POINTS?', 'SWEEP:DEFAULT', 'SWEEP:LIN %i,%i,%i', 'SWEEP:LIST %i,%i,%i,%i,%i,%i,%i,%i,%i,%i', ...
    'SWITCH:STATES %i,%i,%i', 'SWITCH:STATES?', 'SWITCH:SELECT %i', };
 % send commands in random order, output Arduino's reply
 for i = 1 : 10
@@ -228,15 +295,6 @@ end
 
 
 
-
-f = [10415 : 45 : 13070];
-for i = 1 : length(f)
-   [~, F, R, N] = adf41020_calc_regs(f(i), 100, 1250);
-   fprintf('%6X|%6X|%4X\n', F, R, N);
-end
-
-
-
 % *********************************
 % LONG COMMAND (MANUAL TESTING)
 
@@ -281,6 +339,7 @@ while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 fprintf(ard, 'PLL:PFD?');
 fprintf(ard, 'TIME:DWELL?');
 fprintf(ard, 'TIME:PAUSE?');
+fprintf(ard, 'TIME:PULSE?');
 fprintf(ard, 'SWEEP:POINTS?');
 fprintf(ard, 'SWITCH:STATES?');
 
@@ -300,6 +359,9 @@ fprintf(ard, 'PLL:PFD?');
 
 fprintf(ard, sprintf('TIME:DWELL %i', randi([500, 15000])));
 fprintf(ard, 'TIME:DWELL?');
+
+fprintf(ard, sprintf('TIME:PULSE %i', randi([500, 15000])));
+fprintf(ard, 'TIME:PULSE?');
 
 fprintf(ard, sprintf('TIME:PAUSE %i', randi([500, 15000])));
 fprintf(ard, 'TIME:PAUSE?');

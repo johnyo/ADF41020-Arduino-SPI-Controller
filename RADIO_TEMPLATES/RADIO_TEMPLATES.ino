@@ -5,6 +5,7 @@
 
 /* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller, Serial command interface. */
 /* Testing/Incomplete: Ethernet (Not enough SRAM) */
+/* TODO: allow dwell times lo */
 
 
 /* *************************************/
@@ -52,9 +53,8 @@
 #define MAX_NUM_FREQ 101 // maximum number of frequencies
 #define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
 /*    timing parameters (approximate; plus execution time) */
-#define PULSE_DURATION 250 // sync signaling pulse duration in microseconds (must be smaller than sweep_dwell_time/2)
-#define DWELL_TIME 500 // ms default dwell time (can be changed)
-#define SWEEP_PAUSE 15000  // pause between sweeps in microseconds (e.g, for switching time)
+#define DWELL_TIME 500 // ms default dwell time
+#define SWEEP_PAUSE 15000  // ms default pause between sweeps in microseconds (e.g, for switching time)
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
 /*    default sweep (linear) */
 #define SWEEP_DEFAULT_PFDFREQ 1250 // kHz default PFD Frequency
@@ -100,6 +100,7 @@ byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 boolean continuous_run_panels = false; // continuous run, all panels (including switches)
 boolean continuous_run_frequency = false; // continuous frequency sweep (current switch only)
 unsigned int sweep_dwell_time = DWELL_TIME; // dwell time at each step in microseconds
+unsigned int sweep_pulse_time = DWELL_TIME / 2; // sync signaling pulse duration in microseconds
 unsigned int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
 /*    serial command interace */
 String  serial_cmd = ""; //
@@ -207,7 +208,7 @@ void run_panel_sweep() {
     // signal "start of measurement"
     if (i == 0) {
       pulse_sync_signal(SYNC_SIGNAL_STARTMEAS);
-      delayMicroseconds(PULSE_DURATION);
+      delayMicroseconds(sweep_pulse_time);
     }
     // run sweep
     run_frequency_sweep();
@@ -231,7 +232,7 @@ void run_frequency_sweep() {
     else
       pulse_sync_signal(SYNC_SIGNAL_STARTSTEP); // new step
     // wait for step dwell time
-    delayMicroseconds(sweep_dwell_time - PULSE_DURATION);
+    delayMicroseconds(sweep_dwell_time - sweep_pulse_time);
    }
    // control signal: terminate last step
    pulse_sync_signal(SYNC_SIGNAL_STARTSTEP);
@@ -277,13 +278,11 @@ void pll_init() {
 //############################################################
 // check sweep timings
 void check_sweep_timing() {
-  // pulse duration / dwell time
-  if (2*PULSE_DURATION > sweep_dwell_time) {
-    sweep_dwell_time = 2 * PULSE_DURATION;
+  // pulse duration and dwell time
+  if (sweep_pulse_time >= sweep_dwell_time) {
+    sweep_pulse_time = sweep_dwell_time >> 1;
     Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.print(F("Dwell time must be larger or equal to 2 * PULSE_DURATION = "));
-    Serial.print(sweep_dwell_time);
-    Serial.println(F(" us. Setting to this value."));
+    Serial.println(F("Pulse time cannot be larger or equal to dwell time. Setting PULSE = DWELL/2."));
   }
 }
 
@@ -361,6 +360,17 @@ void serial_command_decode() {
   } 
   else if (serial_cmd == "TIME:PAUSE?") {
     Serial.println(sweep_pause_time);
+  }
+  //     update sync pulse duration
+  else if (serial_cmd == "TIME:PULSE") {
+    serial_parse_next_token(false); // get value from buffer
+    sweep_pulse_time = serial_val; // update time
+    check_sweep_timing(); // check new timing
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+    Serial.println(sweep_pulse_time);
+  } 
+  else if (serial_cmd == "TIME:PULSE?") {
+    Serial.println(sweep_pulse_time);
   } 
   //     program standard sweep
   else if (serial_cmd == "SWEEP:DEFAULT") {
@@ -499,7 +509,7 @@ boolean serial_parse_next_token(boolean iscmd) {
     if(ind_sep < 0){ // last value might not be terminated with SERIAL_SEP_V2V
       ind_sep = serial_inbuf.length();
     }
-    serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
+    serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> long
     //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
     //Serial.print(F("VALUE: ")); Serial.println(serial_val);
   }
@@ -556,22 +566,17 @@ char ascii_isprintable(char c) {
 }
 //############################################################
 // "delete" leading n characters from input buffer (in place to save memory)
-// TODO: there should be a better way to do this...
+// TODO: is there a better way to do this?
 void serial_inbuf_shift(unsigned int n) {
-  // if string 
+  // delete string completely?
   if (n >= serial_inbuf.length()) {
     serial_inbuf = "";
   }
-  // copy characters in string
-  for(unsigned int i = 0; i < serial_inbuf.length(); i++) {
-    serial_inbuf.setCharAt(i, serial_inbuf[i+n]);
-  }
-  // fill the rest of the string with whitespaces and trim
-  //   TODO: this is a workaround because settings length-n to \0 does not work;
-  //         why not?
-  for(unsigned int i = serial_inbuf.length()-n; i < serial_inbuf.length(); i++) {
+  // delete n leading characters by replacing them with whitespaces...
+  for(unsigned int i = 0; i < n; i++) {
     serial_inbuf.setCharAt(i, ' ');
   }
+  // ... which are then trimmed away
   serial_inbuf.trim();
 }
 
@@ -584,15 +589,16 @@ void pulse_sync_signal(int signal) {
   // change the state to SIGNAL
   spi_dac_mcp4811(signal);
   // wait for pre-defined pulse duration
-  delayMicroseconds(PULSE_DURATION);
+  delayMicroseconds(sweep_pulse_time);
   // reset the state
   spi_dac_mcp4811(SYNC_SIGNAL_RESET);
 }  
 //############################################################
 // calculate function register value F (global), R-, and N-counter values (returned [R, N]) for ADF41020 PLL
 // (copied and modified from ADF41020 host software)
-// TODO: FIND OUT WHY SOME SETTINGS ARE UNUSED
+// ... this function takes about 100us for the first point (i==0) and 64us for all others 
 void pll_adf40120_addfreq(int RFout, int i) {
+ 
   // prevent adding too many frequencies
   if (i >= MAX_NUM_FREQ - 1) {
     Serial.print(SERIAL_HANDSHAKE_ERR);
@@ -612,20 +618,15 @@ void pll_adf40120_addfreq(int RFout, int i) {
   byte Timeout = 0; // timeout (PFD cycles; 3,7,11,13 ...)
   byte PDPolarity = 0; // phase detector polarity (0:neg, 1:pos)
   byte CounterReset = 0; // 0: normal, 1: R,A,B held in reset
-  //byte LDP = 0; // lock detect precision (see manual)
   byte Powerdown = 0; // power down (see manual)
-  //byte ABPW = 0;
-  //byte Sync = 0;
-  //byte Delay = 0; // 
   byte Muxout = 0; // multiplexer output (see manual)
-  //byte Testmodes = 1;
 
   // calculate P, R, N, B, & A values for calculating register 
-  // (typecast to long for multiplication / division; multiplication first to avoid rounding errors)   
-  int  P = (1 << Prescaler) << 3; // 1 << x = 2^x, x << 3 = x * 8
-  int  R = (int)( ((long)PLL_RF_INPUT_FREQ * 1000) / PFDFreq ); // MHz -> kHz (like PFDFreq)
-  int  N = (int)( ((long)RFout * 250) / PFDFreq ); // MHz -> kHz plus /4 for channel spacing
-  int  B = N / P;
+  // (typecast to long for multiplication and division; multiplication first to avoid rounding errors)   
+  unsigned int  P = (1 << Prescaler) << 3; // 1 << x = 2^x, x << 3 = x * 8
+  unsigned int  R = (unsigned int)( ((unsigned long)PLL_RF_INPUT_FREQ * 1000) / PFDFreq ); // MHz -> kHz (like PFDFreq)
+  unsigned int  N = (unsigned int)( ((unsigned long)RFout * 250) / PFDFreq ); // MHz -> kHz plus /4 for channel spacing
+  unsigned int  B = N / P;
   byte A = (byte)( N - (B * P) );
 
   // modify fastlock and powerdown settings
@@ -646,7 +647,7 @@ void pll_adf40120_addfreq(int RFout, int i) {
   N2[i] = 0b00111111 & (CPGain << 5 | (byte)(B >> 8));
   N1[i] = (byte)B;
   N0[i] = ((A&0x3F) << 2) | 0x1;
-
+  
   // Debug output
   /*
   Serial.print(RFout);
@@ -840,10 +841,36 @@ void spi_write_int(int data) {
 
 
 //########################################################################################################################
+//########################################################################################################################
+// OLD AND RUSTY
+//########################################################################################################################
+//########################################################################################################################
+
+
 //############################################################
+/*
+void serial_inbuf_shift(unsigned int n) {
+  // delete string completely?
+  if (n >= serial_inbuf.length()) {
+    serial_inbuf = "";
+  }
+  // copy characters in string
+  for(unsigned int i = 0; i < serial_inbuf.length(); i++) {
+    serial_inbuf.setCharAt(i, serial_inbuf[i+n]);
+  }
+  // fill the rest of the string with whitespaces and trim
+  //   TODO: this is a workaround because settings length-n to \0 does not work;
+  //         why not?
+  for(unsigned int i = serial_inbuf.length()-n; i < serial_inbuf.length(); i++) {
+    serial_inbuf.setCharAt(i, ' ');
+  }
+  serial_inbuf.trim();
+}
+/*
+
+
 //############################################################
-// OLD AND RUSTY, MAIN LOOP
-//############################################################
+// MAIN LOOP
 
   /* SERIAL CONTROL INTERFACE */
   /*
@@ -909,7 +936,7 @@ void spi_write_int(int data) {
    else
    pulse_sync_signal(SYNC_SIGNAL_STARTSTEP); // new step
    // wait for step dwell time
-   delayMicroseconds(sweep_dwell_time - PULSE_DURATION);
+   delayMicroseconds(sweep_dwell_time - sweep_pulse_time);
    }
    // pause after sweep
    delayMicroseconds(SWEEP_PAUSE);
