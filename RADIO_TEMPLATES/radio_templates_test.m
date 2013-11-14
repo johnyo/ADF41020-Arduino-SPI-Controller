@@ -8,7 +8,9 @@
 % *******************************************************************************************************
 
 % init
-clear; close all; clc; pause(0.01);
+clear; close all; clc; pause(0.01); 
+[~, path] = system('locate radio_templates_test.m');
+cd(fileparts(path)); addpath('./..');
 return
 
 % open device connection
@@ -17,36 +19,6 @@ fopen(ard);
 
 % close device connection
 fclose(ard);
-
-
-% *******************************************************************************************************
-% MANUAL SERIAL INTERFACE ROBUSTNESS TESTING: RANDOM STRINGS
-
-% a valid command (just for testing)
-fprintf(ard, 'FREQ 1,2,3,4,5,6,7');
-
-% random commands of random length
-%     settings
-str_len = 700; % bytes maximum length (choose slightly larger than SERIAL_INBUF_SIZE)
-char_set = [0, 255]; % all 1-byte characters (this might cause problems after some time)
-char_set = [48, 122]; % 0-9, a-z, A-Z, and a few special characters
-char_set = [32, 126]; % all printable ASCII
-%     create and send command
-len = randi([1, str_len], 1);
-str = char(randi(char_set, [1,len]));
-fprintf(ard, str);
-
-% FREQ commands with variable length
-%     settings
-maxpts = 101; % maximum number of points
-
-
-
-
-
-% display output (IMPORTANT: do not execute at the same time as fprintf commands)
-while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
-
 
 
 
@@ -81,8 +53,10 @@ for i = 1 : 25
       reply = strtrim(fgetl(ard));
    end
    % check
-   if ~isempty(strfind(reply, err_msg1)) || ~isempty(strfind(reply, err_msg2))
-      fprintf('Test %3i, len=%4i:   OK (received error message)\n', i, length(str));
+   if ~isempty(strfind(reply, err_msg1))
+      fprintf('Test %3i, len=%4i:   OK (unknown command message)\n', i, length(str));
+   elseif ~isempty(strfind(reply, err_msg2))
+      fprintf('Test %3i, len=%4i:   OK (input buffer overrun message)\n', i, length(str));
    else
       fprintf('Test %3i, len=%4i:   WARNING (received truncated or corrupted error message)\n', i, length(str));
       str
@@ -155,15 +129,26 @@ flushinput(ard);
 flushoutput(ard);
 
 % linear sweep (PFD has to be correct => load from Arduino)
-fmin  =  7000;
-fchan = 4 * query(ard, 'PLL:PFD?\n', '%s','%i') / 1e3; % has to be correct; otherwise the PLL registers are crap
-fmax  = 14000;
-maxpts = 101; % maximum number of points
+fmin  =  7000; % MHz
+fmax  = 14000; % MHz
+maxpts =  101; % maximum number of points
 tpause = [0.3, 3, 0.2]; % s pause time [linear, list, #pts]
 
 % program a few sweeps and test the results
 clc;
 for i = 1 : 25
+   
+   % choose random channel spacing
+   fchan = randi([1, 5]); % MHz
+   %     set PFD frequency
+   fprintf(ard, sprintf('PLL:PFD %i', fchan/4 * 1000)); % kHz
+   pause(tpause(3));
+   flushinput(ard);
+   %     check new channel spacing
+   if query(ard, 'PLL:PFD?\n', '%s','%i') ~= fchan/4*1000
+      error('--- STOP: PFD ---');
+   end
+   
    % random start, step, stop (multiples of fchan; but we don't care if fstart and fstop are multiples of fstep apart)
    fstart = round((fmin + rand * (fmax-fmin)) / fchan) * fchan;
    fstop  = round((fmax - rand * (fmax-fmin)) / fchan) * fchan;
@@ -174,10 +159,9 @@ for i = 1 : 25
    % quick checks
    if round(fstep/fchan) ~= fstep/fchan || length(f) > maxpts
       error('Problems with frequency vector generation.');
-      continue;
    end
    % output
-   fprintf('\n%3i  -  %5i : %4i : %5i MHz   (%3i values)\n', i, fstart,fstep,fstop, length(f));
+   fprintf('\nTEST %i:     %5i : %4i : %5i MHz   (%3i values)\n', i, fstart,fstep,fstop, length(f));
    
    % program this sweep as linear sweep
    cmd = sprintf('SWEEP:LIN %i,%i,%i',fstart,fstep,fstop);
@@ -188,15 +172,27 @@ for i = 1 : 25
    %     reply (plus get any debug information)
    reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
    if ~strcmpi(reply{end}, ['OK -- ',regexprep(cmd,',',':')]); error('--- STOP: HANDSHAKE ---'); end
-   fprintf(' %s%s |', reply{end}, repmat(' ',1,60-length(reply{end})));
+   fprintf(' %s%s |', reply{end}, repmat(' ',1,40-length(reply{end})));
    %     number of frequencies
    flushinput(ard);
    fprintf(ard, 'SWEEP:POINTS?');
    pause(tpause(3));
    reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
-   fprintf(' #PTS: %s%s\n', reply{end}, repmat(' ',1,20-length(reply{end})));
+   fprintf(' #PTS: %s%s |', reply{end}, repmat(' ',1,10-length(reply{end})));
    if str2double(reply{end})<length(f); error('--- STOP: #pts ---'); end
-   
+   %     register values
+   flushinput(ard);
+   fprintf(ard, 'PLL:REGVALS?');
+   pause(tpause(2));
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   clear F R N reg_chk_ok;
+   for j = 1 : length(f)
+      [~, F,R,N] = adf41020_calc_regs(f(j), 100, fchan/4*1000); % expected register values
+      Regs = sscanf(reply{j}, '%X|%X|%X'); % returned register values
+      reg_chk_ok(j) = all( Regs(:) - double([F; R; N]) < eps ); % compare
+   end
+   if all(reg_chk_ok); fprintf(' PLL REGS: OK \n'); else error('--- STOP: registers ---'); end
+ 
    % program this sweep as randomized list sweep
    f = f(randperm(length(f)));
    cmd = sprintf('SWEEP:LIST %s', sprintf('%i,', f)); cmd(end) = [];
@@ -207,14 +203,36 @@ for i = 1 : 25
    %     reply (plus get any debug information)
    reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
    if ~strcmpi(reply{end}, 'OK -- SWEEP:LIST'); error('--- STOP: HANDSHAKE ---'); end
-   fprintf(' %s%s |', reply{end}, repmat(' ',1,60-length(reply{end})));
+   fprintf(' %s%s |', reply{end}, repmat(' ',1,40-length(reply{end})));
    %     number of frequencies
    flushinput(ard);
    fprintf(ard, 'SWEEP:POINTS?');
    pause(tpause(3));
    reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
-   fprintf(' #PTS: %s%s\n', reply{end}, repmat(' ',1,20-length(reply{end})));
+   fprintf(' #PTS: %s%s |', reply{end}, repmat(' ',1,10-length(reply{end})));
    if str2double(reply{end})<length(f); error('--- STOP: #pts ---'); end
+   %     register values
+   flushinput(ard);
+   fprintf(ard, 'PLL:REGVALS?');
+   pause(tpause(2));
+   reply={}; ri=1; while ard.BytesAvailable > 0; reply{ri}=strtrim(fgetl(ard)); ri=ri+1; end
+   clear F R N reg_chk_ok;
+   for j = 1 : length(f)
+      [~, F,R,N] = adf41020_calc_regs(f(j), 100, fchan/4*1000); % expected register values
+      Regs = sscanf(reply{j}, '%X|%X|%X'); % returned register values
+      reg_chk_ok(j) = all( Regs(:) - double([F; R; N]) < eps ); % compare
+   end
+   if all(reg_chk_ok); fprintf(' PLL REGS: OK \n'); else error('--- STOP: registers ---'); end
+end
+
+
+
+
+
+f = [10415 : 45 : 13070];
+for i = 1 : length(f)
+   [~, F, R, N] = adf41020_calc_regs(f(i), 100, 1250);
+   fprintf('%6X|%6X|%4X\n', F, R, N);
 end
 
 
@@ -266,12 +284,12 @@ fprintf(ard, 'TIME:PAUSE?');
 fprintf(ard, 'SWEEP:POINTS?');
 fprintf(ard, 'SWITCH:STATES?');
 
-% display output (IMPORTANT: do not execute at the same time as fprintf commands)
-while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
-
 % PLL register values
 fprintf(ard, 'SWEEP:DEFAULT'); pause(0.1);
 fprintf(ard, 'PLL:REGVALS?');
+
+% display output (IMPORTANT: do not execute at the same time as fprintf commands)
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 
 % *********************************
@@ -304,7 +322,7 @@ while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 
 % *********************************
-% CHECK IF CHANGING SWEEP CORE PARAMETERS RESETS THE SWEEP
+% SWITCHES
 
 % random switch states
 sw_states = randi([0, 255], [1,3]);

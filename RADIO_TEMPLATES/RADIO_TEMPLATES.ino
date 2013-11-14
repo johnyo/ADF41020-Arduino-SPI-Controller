@@ -1,10 +1,10 @@
 
 /* Purpose of this program is to create templates & code that can later be merged with the other sweep/radio control */
-/*    Pinout for Arduino UNO */
+/*    Pinout designed for Arduino UNO + Shields */
 /* Author: Daniel Arnitz */
 
 /* Implemented: Unified SPI interface, SPI device interfaces for PLL, DAC, and switch controller, Serial command interface. */
-/* Testing: Ethernet */
+/* Testing/Incomplete: Ethernet (Not enough SRAM) */
 
 
 /* *************************************/
@@ -394,6 +394,9 @@ void serial_command_decode() {
     else {
       Serial.println(F("Stop value for PLL:SWEEP:LIN missing. Need PLL:SWEEP:LIST <start>,<step>,<stop>"));
     }
+    // program sweep
+    pll_set_linear_sweep(fstart, fstep, fstop);
+    pll_init();
     // send feedback
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd);
     Serial.print(F(" ")); 
@@ -402,21 +405,18 @@ void serial_command_decode() {
     Serial.print(fstep); 
     Serial.print(F(":")); 
     Serial.println(fstop);
-    // program sweep
-    pll_set_linear_sweep(fstart, fstep, fstop);
-    pll_init();
   }
   //     program new list sweep
   else if (serial_cmd == "SWEEP:LIST") { 
     pll_reset_sweep(); // reset old sweep
-    // send feedback
-    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
     // update sweep
     while (serial_parse_next_token(false)) { // while there are new values in the buffer ...
       pll_add_sweep_frequency(serial_val); // ... add them to the sweep
     }
-    // and initialize PLL
+    // initialize PLL
     pll_init();
+    // send feedback
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
   }
   //    set switch states directly
   else if (serial_cmd == "SWITCH:STATES") {
@@ -476,7 +476,7 @@ void serial_command_decode() {
 // parse string and return the next token (command string - whitespace - comma separated list of values)
 //    returns true if a new token was found; false if not
 boolean serial_parse_next_token(boolean iscmd) {
-  Serial.print(F("BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
+  //Serial.print(F("BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   // split index in string
   int ind_sep = 0;
   // check if buffer is already empty
@@ -490,8 +490,8 @@ boolean serial_parse_next_token(boolean iscmd) {
       ind_sep = serial_inbuf.length();
     }
     serial_cmd = serial_inbuf.substring(0,ind_sep); // -> command string
-    Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
-    Serial.print(F("COMMAND: ")); Serial.println(serial_cmd);
+    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    //Serial.print(F("COMMAND: ")); Serial.println(serial_cmd);
   }
   // next token is an integer value
   else {
@@ -500,16 +500,13 @@ boolean serial_parse_next_token(boolean iscmd) {
       ind_sep = serial_inbuf.length();
     }
     serial_val = (serial_inbuf.substring(0,ind_sep)).toInt(); // -> integer
-    Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
-    Serial.print(F("VALUE: ")); Serial.println(serial_val);
+    //Serial.print(F("SEPARATOR POSITION: ")); Serial.println(ind_sep);
+    //Serial.print(F("VALUE: ")); Serial.println(serial_val);
   }
   // remove decoded token plus separator
   serial_inbuf_shift(ind_sep+1);
   //serial_inbuf = serial_inbuf.substring(ind_sep+1); // TODO: fails for long vectors (memory?)
-  
-  // get rid of any whitespaces
-  serial_inbuf.trim();
-  Serial.print(F("REMAINING BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
+  //Serial.print(F("REMAINING BUFFER (")); Serial.print(serial_inbuf.length()); Serial.print(F("): ")); Serial.println(serial_inbuf);
   return true;
 }
 //############################################################
@@ -561,13 +558,19 @@ char ascii_isprintable(char c) {
 // "delete" leading n characters from input buffer (in place to save memory)
 // TODO: there should be a better way to do this...
 void serial_inbuf_shift(unsigned int n) {
+  // if string 
+  if (n >= serial_inbuf.length()) {
+    serial_inbuf = "";
+  }
   // copy characters in string
   for(unsigned int i = 0; i < serial_inbuf.length(); i++) {
     serial_inbuf.setCharAt(i, serial_inbuf[i+n]);
   }
   // fill the rest of the string with whitespaces and trim
+  //   TODO: this is a workaround because settings length-n to \0 does not work;
+  //         why not?
   for(unsigned int i = serial_inbuf.length()-n; i < serial_inbuf.length(); i++) {
-    serial_inbuf.setCharAt(i, ' '); // using \0 does not work; shy not?
+    serial_inbuf.setCharAt(i, ' ');
   }
   serial_inbuf.trim();
 }
@@ -620,8 +623,8 @@ void pll_adf40120_addfreq(int RFout, int i) {
   // calculate P, R, N, B, & A values for calculating register 
   // (typecast to long for multiplication / division; multiplication first to avoid rounding errors)   
   int  P = (1 << Prescaler) << 3; // 1 << x = 2^x, x << 3 = x * 8
-  int  R = (int)( ((long)PLL_RF_INPUT_FREQ * 1000) / PFDFreq ); // kHz -> Hz
-  int  N = (int)( ((long)RFout * 250) / PFDFreq ); // kHz -> Hz plus /4 for channel spacing
+  int  R = (int)( ((long)PLL_RF_INPUT_FREQ * 1000) / PFDFreq ); // MHz -> kHz (like PFDFreq)
+  int  N = (int)( ((long)RFout * 250) / PFDFreq ); // MHz -> kHz plus /4 for channel spacing
   int  B = N / P;
   byte A = (byte)( N - (B * P) );
 
