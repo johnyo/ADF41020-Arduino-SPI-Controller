@@ -36,7 +36,7 @@ for external syncing purposes.
 // Integer values can be maxed out if large enough
 // This value is used to indicate to the delayer function
 // if the pause is too large.
-#define DELAY_IS_MICROSECONDS false 
+#define DELAY_IS_MICROSECONDS true 
 
 /* Here is how the delays work together:
 D0 (3 bytes) sent over spi
