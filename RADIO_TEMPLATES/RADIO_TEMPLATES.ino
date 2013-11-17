@@ -224,7 +224,6 @@ void run_frequency_sweep() {
   // run sweep 
   for(unsigned int i = 0; i < num_freq; i++) {
     // program PLL
-    // TODO: also update R-counter if necessary
     spi_pll_adf40120(N2[i], N1[i], N0[i]);
     // sync signal
     if(i == 0)
@@ -236,6 +235,9 @@ void run_frequency_sweep() {
    }
    // control signal: terminate last step
    pulse_sync_signal(SYNC_SIGNAL_STARTSTEP);
+   // reset to first frequency and wait for inter-sweep pause time
+   spi_pll_adf40120(N2[0], N1[0], N0[0]);
+   delayMicroseconds(sweep_pause_time - sweep_pulse_time);
 }
 
 
