@@ -84,9 +84,6 @@ unsigned int localPort = 5025; // standard SCPI port is 5025
 EthernetServer eth_server(localPort);
 */
 
-/* MISC */
-#define HALT_IF_ERROR false // stop execution in case of errors
-
 /* GLOBAL VARIABLES */
 /*    frequency sweep and PLL control */
 unsigned long PFDFreq = SWEEP_DEFAULT_PFDFREQ; // PFD Frequency in MHz ("channel spacing")
@@ -307,8 +304,7 @@ void check_sweep_timing() {
 //############################################################
 // SERIAL CONTROL INTERFACE
 //############################################################
-// parse string and return the next token (command string - whitespace - comma separated list of values)
-//    returns true if a new token was found; false if not
+// command decoder
 void serial_command_decode() {
   // get command from buffer
   serial_parse_next_token(true);
