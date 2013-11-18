@@ -55,7 +55,8 @@
 #define MAX_NUM_FREQ 101 // maximum number of frequencies
 #define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
 /*    timing parameters (approximate; plus execution time) */
-#define DWELL_TIME 500 // default dwell time
+#define DWELL_TIME 1000 // default dwell time in microseconds
+#define DWELL_TIME_EXEC_CORR 33 // microseconds correction for dwell time to account for program delay
 #define SWEEP_PAUSE 15000  // default pause between sweeps in microseconds (e.g, for switching time)
 #define TRIG_PAUSE 500 // pause after sending the trigger signal and before starting a sweep in microseconds
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
@@ -102,9 +103,9 @@ byte N0[MAX_NUM_FREQ] = {}; // PLL 19-bit N counter, [N2,N1,N0]
 /*    sweep timing */
 boolean continuous_run_panels = false; // continuous run, all panels (including switches)
 boolean continuous_run_frequency = false; // continuous frequency sweep (current switch only)
-unsigned int sweep_dwell_time = DWELL_TIME; // dwell time at each step in microseconds
-unsigned int sweep_pulse_time = DWELL_TIME / 2; // sync signaling pulse duration in microseconds
-unsigned int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
+int sweep_dwell_time = DWELL_TIME - DWELL_TIME_EXEC_CORR; // dwell time at each step in microseconds
+int sweep_pulse_time = DWELL_TIME / 2; // sync signaling pulse duration in microseconds
+int sweep_pause_time = SWEEP_PAUSE; // pause time between sweeps in microseconds
 /*    serial command interace */
 String  serial_cmd = ""; //
 int     serial_val = 0; // 
@@ -207,7 +208,7 @@ void loop() {
 // sweep: run panel sweep (measurement) / cycle through switches
 void run_panel_sweep() {
   // cycle through all ports
-  for(unsigned int i = 0; i < (switch_num_switches * switch_num_ports + 2); i++) {
+  for(unsigned int i = 0; i < switch_num_switches * switch_num_ports; i++) {
     // next switch port
     if (i == 0) {
       switch_chain_init();
@@ -224,10 +225,9 @@ void run_panel_sweep() {
     // run sweep
     run_frequency_sweep();
   }
-  // give a "sweep terminated" signal
-  pulse_sync_signal(SYNC_SIGNAL_STARTMEAS);
-  // reset switch chain + inter-sweep wait
+  // reset switch chain
   switch_chain_reset();
+  // wait for switches to (dis)connect
   delayMicroseconds(sweep_pause_time - sweep_pulse_time);
 }
 //############################################################
@@ -292,6 +292,9 @@ void pll_init() {
 // check sweep timings
 void check_sweep_timing() {
   // pulse duration and dwell time
+  if (sweep_dwell_time < 0) {
+    sweep_dwell_time = 0;
+  }
   if (sweep_pulse_time >= sweep_dwell_time) {
     sweep_pulse_time = sweep_dwell_time >> 1;
     Serial.print(SERIAL_HANDSHAKE_ERR);
@@ -361,13 +364,13 @@ void serial_command_decode() {
   //     dwell time (set and query)
   else if (serial_cmd == "TIME:DWELL") {
     serial_parse_next_token(false); // get value from buffer
-    sweep_dwell_time = serial_val; // update time
+    sweep_dwell_time = serial_val - DWELL_TIME_EXEC_CORR; // update time
     check_sweep_timing(); // check new timing
     Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(sweep_dwell_time);
+    Serial.println(sweep_dwell_time + DWELL_TIME_EXEC_CORR); // EXEC_CORR is internal; report true sweep time
   } 
   else if (serial_cmd == "TIME:DWELL?") {
-    Serial.println(sweep_dwell_time);
+    Serial.println(sweep_dwell_time + DWELL_TIME_EXEC_CORR); // EXEC_CORR is internal; report true sweep time
   } 
   //     update pause time between sweeps
   else if (serial_cmd == "TIME:PAUSE") {
