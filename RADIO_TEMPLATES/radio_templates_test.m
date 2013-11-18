@@ -18,14 +18,11 @@ recaddpath('~/ReynoldsLab/Git-Arduino');
 return
 
 % open device connection
-ard = serial('/dev/ttyACM1', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
+ard = serial('/dev/ttyACM0', 'Baud',19200, 'Terminator','LF', 'InputBuffersize',2^18, 'OutputBuffersize',2^12);
 fopen(ard);
 
 % close device connection
 fclose(ard);
-
-
-
 
 
 
@@ -148,7 +145,7 @@ pause(0.5); if ard.BytesAvailable > 0; disp(fgetl(ard)); end
 cmd_list = {'RUN:PANELS', 'RUN:FREQ', 'CONT:PANELS', 'CONT:FREQ', 'STOP', 'SINGLE',...
    'PLL:PFD %i', 'PLL:PFD?', 'TIME:DWELL 500', 'TIME:DWELL?', 'TIME:PAUSE %i', 'TIME:PAUSE?', 'TIME:PULSE %i', 'TIME:PULSE?',...
    'SWEEP:POINTS?', 'SWEEP:DEFAULT', 'SWEEP:LIN %i,%i,%i', 'SWEEP:LIST %i,%i,%i,%i,%i,%i,%i,%i,%i,%i', ...
-   'SWITCH:STATES %i,%i,%i', 'SWITCH:STATES?', 'SWITCH:SELECT %i', };
+   'SWITCH:NUM %i', 'SWITCH:NUM?', 'SWITCH:PORTS %i', 'SWITCH:PORTS?', 'SWITCH:STATES %i,%i,%i', 'SWITCH:STATES?', 'SWITCH:SELECT %i', };
 % send commands in random order, output Arduino's reply
 for i = 1 : 10
    % reset
@@ -341,6 +338,8 @@ fprintf(ard, 'TIME:DWELL?');
 fprintf(ard, 'TIME:PAUSE?');
 fprintf(ard, 'TIME:PULSE?');
 fprintf(ard, 'SWEEP:POINTS?');
+fprintf(ard, 'SWITCH:NUM?');
+fprintf(ard, 'SWITCH:PORTS?');
 fprintf(ard, 'SWITCH:STATES?');
 
 % PLL register values
@@ -366,6 +365,12 @@ fprintf(ard, 'TIME:PULSE?');
 fprintf(ard, sprintf('TIME:PAUSE %i', randi([500, 15000])));
 fprintf(ard, 'TIME:PAUSE?');
 
+fprintf(ard, sprintf('SWITCH:NUM %i', randi([0, 12])));
+fprintf(ard, 'SWITCH:NUM?');
+
+fprintf(ard, sprintf('SWITCH:PORTS %i', randi([1, 8])));
+fprintf(ard, 'SWITCH:PORTS?');
+
 % display output (IMPORTANT: do not execute at the same time as fprintf commands)
 while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
@@ -386,11 +391,23 @@ while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 % *********************************
 % SWITCHES
 
+% maximum number of switches exeeded
+fprintf(ard, 'SWITCH:NUM 15000');
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+
+% random number of ports and switches
+fprintf(ard, sprintf('SWITCH:NUM %i', randi([0, 12])));
+fprintf(ard, sprintf('SWITCH:PORTS %i', randi([1, 8])));
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
+num_sw = query(ard, 'SWITCH:NUM?', '%s\n', '%i');
+num_po = query(ard, 'SWITCH:PORTS?', '%s\n', '%i');
+
 % random switch states
-sw_states = randi([0, 255], [1,3]);
+sw_states = randi([0, 2^num_po-1], [1,num_sw]);
 fprintf(ard, sprintf('SWITCH:STATES %i,%i,%i', sw_states));
 fprintf(ard, 'SWITCH:STATES?');
 disp(sw_states);
+while ard.BytesAvailable > 0; disp(strtrim(fgetl(ard))); end
 
 % running light
 for i = 1 : 1 : 3 * 6

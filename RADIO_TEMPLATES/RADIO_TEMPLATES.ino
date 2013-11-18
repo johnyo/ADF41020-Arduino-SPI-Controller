@@ -33,28 +33,31 @@
 /*    clock and timing parameters */
 #define SPI_CLOCK_DEFAULT SPI_CLOCK_DIV2 // default: 8 MHz (for AD41020, MCP4811)
 #define SPI_CLOCK_TLE723X SPI_CLOCK_DIV4 // 4 MHz for TLE723x
-/*    binary masks for chip enable - PORTD (7:PLL, 5:DAC, [4:RESERVED], 3:switch-driver-chain) */
+/*    binary masks for chip enable - PORTD (7:PLL, 6: TRIG SIGNAL, 5:DAC, [4:RESERVED], 3:switch-driver-chain) */
 #define SPI_CE_MASK_PLL 0b10000000 // PLL controller
 #define SPI_CE_MASK_DAC 0b00100000 // sync signal DAC
 #define SPI_CE_MASK_DRV 0b00001000 // switch driver chain
+/*    other digital signals */
+#define DIG_SIGNAL_TRIG 0b01000000 // sweep trigger signal for sampling
 
 /* DAC sync line values (10 bit = 1023 max \approx 4V) */
 #define SYNC_SIGNAL_STARTMEAS 1023 // start of entire measurement/loop
-#define SYNC_SIGNAL_STARTSWEEP 512 // start of sweep
-#define SYNC_SIGNAL_STARTSTEP 256 // start of step
+#define SYNC_SIGNAL_STARTSWEEP 767 // start of sweep
+#define SYNC_SIGNAL_STARTSTEP 512 // start of step
 #define SYNC_SIGNAL_RESET 0 // default
 
 /* SWITCHES */
-#define SWITCH_NUM_PORTS 6 // number of ports per switch
-#define SWITCH_NUM_SWITCHES 3 // number of switches
+#define SWITCH_NUM_PORTS 6 // number of ports per switch (default)
+#define SWITCH_NUM_SWITCHES 12 // MAXIMUM number of switches
 
 /* SWEEP / PLL  */
 /*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
 #define MAX_NUM_FREQ 101 // maximum number of frequencies
 #define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
 /*    timing parameters (approximate; plus execution time) */
-#define DWELL_TIME 500 // ms default dwell time
-#define SWEEP_PAUSE 15000  // ms default pause between sweeps in microseconds (e.g, for switching time)
+#define DWELL_TIME 500 // default dwell time
+#define SWEEP_PAUSE 15000  // default pause between sweeps in microseconds (e.g, for switching time)
+#define TRIG_PAUSE 500 // pause after sending the trigger signal and before starting a sweep in microseconds
 #define LONG_PAUSE 200 // pause in milliseconds (if needed)
 /*    default sweep (linear) */
 #define SWEEP_DEFAULT_PFDFREQ 1250 // kHz default PFD Frequency
@@ -108,9 +111,11 @@ int     serial_val = 0; //
 String  serial_inbuf = "";  // serial input buffer (CMD VAL1,VAL2,...)
 boolean serial_inbuf_complete = false; // command complete (EOL reached)?
 /*    switches */
+byte switch_num_switches = SWITCH_NUM_SWITCHES; // number of switches
+byte switch_num_ports = SWITCH_NUM_PORTS; // number of ports per switch
 byte switch_states[SWITCH_NUM_SWITCHES] = {}; // state of all switches in chain (binary)
 byte switch_port_active = 0; // currently active port in switch chain (0 ... #switches * #ports - 1)
-byte switch_port_mask = (1 << (SWITCH_NUM_PORTS + 1)) - 1; // port mask (ones up to SWITCH_NUM_PORTS, zeros otherwise)
+byte switch_port_mask = (1 << (switch_num_ports + 1)) - 1; // port mask (ones up to switch_num_ports, zeros otherwise)
 
 
 
@@ -128,9 +133,9 @@ void setup() {
 
   // Initialize digital outputs
   //    Define outputs on port D
-  DDRD = DDRD | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_DRV;
+  DDRD = DDRD | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_DRV | DIG_SIGNAL_TRIG;
   //    Initialize outputs
-  PORTD = 0b00000000;
+  PORTD = 0x0;
 
   // Initialize SPI interface
   SPI.begin();
@@ -148,6 +153,9 @@ void setup() {
   eth_server.begin();
   */
   
+  // Initialize signaling DAC
+  pulse_sync_signal(SYNC_SIGNAL_RESET);
+  
   // Initialize PLL
   //     check sweep timings
   check_sweep_timing();
@@ -158,7 +166,9 @@ void setup() {
   
   // Initialize switch chain (all off)
   switch_chain_reset();
+  
 }
+
 
 
 //############################################################
@@ -185,6 +195,7 @@ void loop() {
   if (continuous_run_frequency) {
     continuous_run_panels = false; // prevent switching
     run_frequency_sweep();
+    delayMicroseconds(sweep_pause_time - sweep_pulse_time - sweep_dwell_time); // inter-sweep wait
   }
 }
 
@@ -196,7 +207,7 @@ void loop() {
 // sweep: run panel sweep (measurement) / cycle through switches
 void run_panel_sweep() {
   // cycle through all ports
-  for(unsigned int i = 0; i < (SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 2); i++) {
+  for(unsigned int i = 0; i < (switch_num_switches * switch_num_ports + 2); i++) {
     // next switch port
     if (i == 0) {
       switch_chain_init();
@@ -215,11 +226,12 @@ void run_panel_sweep() {
   }
   // give a "sweep terminated" signal
   pulse_sync_signal(SYNC_SIGNAL_STARTMEAS);
-  // and reset switch chain
+  // reset switch chain + inter-sweep wait
   switch_chain_reset();
+  delayMicroseconds(sweep_pause_time - sweep_pulse_time);
 }
 //############################################################
-// sweep: cycle through frequencies
+// sweep: cycle through frequencies 
 void run_frequency_sweep() {
   // run sweep 
   for(unsigned int i = 0; i < num_freq; i++) {
@@ -233,11 +245,10 @@ void run_frequency_sweep() {
     // wait for step dwell time
     delayMicroseconds(sweep_dwell_time - sweep_pulse_time);
    }
-   // control signal: terminate last step
-   pulse_sync_signal(SYNC_SIGNAL_STARTSTEP);
-   // reset to first frequency and wait for inter-sweep pause time
+   // reset to first frequency and terminate last step
    spi_pll_adf40120(N2[0], N1[0], N0[0]);
-   delayMicroseconds(sweep_pause_time - sweep_pulse_time);
+   pulse_sync_signal(SYNC_SIGNAL_STARTSTEP);
+   delayMicroseconds(sweep_dwell_time - sweep_pulse_time);
 }
 
 
@@ -304,7 +315,10 @@ void serial_command_decode() {
   if (serial_cmd == "RUN:PANELS") {
     continuous_run_panels = false; // switch off continuous modes
     continuous_run_frequency = false;
+    PORTD = PORTD | DIG_SIGNAL_TRIG; // set trigger signal (active high)
+    delayMicroseconds(TRIG_PAUSE);
     run_panel_sweep(); // run
+    PORTD = PORTD & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //    continuously run frequency sweeps for all panels
@@ -316,7 +330,10 @@ void serial_command_decode() {
   else if (serial_cmd == "RUN:FREQ") {
     continuous_run_panels = false; // switch off continuous modes
     continuous_run_frequency = false;
+    PORTD = PORTD | DIG_SIGNAL_TRIG; // set trigger signal (active high)
+    delayMicroseconds(TRIG_PAUSE);
     run_frequency_sweep(); // run
+    PORTD = PORTD & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //     continuously run frequency sweeps
@@ -430,16 +447,44 @@ void serial_command_decode() {
     // send feedback
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
   }
+  //    set number of switches
+  else if (serial_cmd == "SWITCH:NUM") {
+    serial_parse_next_token(false); // get value from buffer
+    if (serial_val <= SWITCH_NUM_SWITCHES) {
+      switch_num_switches = serial_val; // update value
+      Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+      Serial.println(switch_num_switches);
+    } else {
+      Serial.print(SERIAL_HANDSHAKE_ERR); // send feedback
+      Serial.print(F("Maximum number of switches is "));
+      Serial.print(SWITCH_NUM_SWITCHES);
+      Serial.println(F(". Increase SWITCH_NUM_SWITCHES if needed."));
+    }
+  } 
+  else if (serial_cmd == "SWITCH:NUM?") {
+    Serial.println(switch_num_switches);
+  } 
+  //    set number of ports per switch
+  else if (serial_cmd == "SWITCH:PORTS") {
+    serial_parse_next_token(false); // get value from buffer
+    switch_num_ports = serial_val; // update value
+    switch_port_mask = (1 << (switch_num_ports + 1)) - 1; // update port mask
+    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+    Serial.println(switch_num_ports);
+  } 
+  else if (serial_cmd == "SWITCH:PORTS?") {
+    Serial.println(switch_num_ports);
+  } 
   //    set switch states directly
   else if (serial_cmd == "SWITCH:STATES") {
     // modify switch states
     byte i = 0;
-    while (serial_parse_next_token(false) && (i < SWITCH_NUM_SWITCHES)) {
+    while (serial_parse_next_token(false) && (i < switch_num_switches)) {
       switch_states[i] = (byte)serial_val;
       i++;
     }
     // update switch chain / send feedback
-    if (i == SWITCH_NUM_SWITCHES) {
+    if (i == switch_num_switches) {
       switch_chain_apply();
       Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd);
     } else {
@@ -448,11 +493,11 @@ void serial_command_decode() {
     }
   } 
   else if (serial_cmd == "SWITCH:STATES?") {
-    for(byte i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
+    for(byte i = 0; i < switch_num_switches - 1; i++) {
       Serial.print(switch_states[i]);
       Serial.print(F(","));
     }
-    Serial.println(switch_states[SWITCH_NUM_SWITCHES-1]);
+    Serial.println(switch_states[switch_num_switches-1]);
   } 
   //    select specific switch port (ports # start at 1)
   else if (serial_cmd == "SWITCH:SELECT") {
@@ -683,7 +728,7 @@ void switch_chain_apply() {
 // reset switch chain
 void switch_chain_reset() {
   // reset states
-  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < switch_num_switches; i++) {
     switch_states[i] = 0;
   }
   switch_port_active = 0;
@@ -694,7 +739,7 @@ void switch_chain_reset() {
 // initialize switch chain (set first switch)
 void switch_chain_init() {
   // reset states
-  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < switch_num_switches; i++) {
     switch_states[i] = 0;
   }
   // activate first switch
@@ -710,11 +755,11 @@ void switch_chain_next() {
   byte co_this = 0; // this switch
   byte co_last = 0; // last switch
   // activate next switch by shifting states
-  for(byte i = 0; i < SWITCH_NUM_SWITCHES; i++) {
+  for(byte i = 0; i < switch_num_switches; i++) {
     // save MSB state / carry-over
     co_last = co_this;
-    co_this = switch_states[i] >> SWITCH_NUM_PORTS;
-    // shift: next switch + carry-over; make sure only SWITCH_NUM_PORTS can be active
+    co_this = switch_states[i] >> switch_num_ports;
+    // shift: next switch + carry-over; make sure only switch_num_ports can be active
     switch_states[i] = (switch_states[i] << 1 | co_last) & switch_port_mask;
   }
   // next port is active
@@ -729,8 +774,8 @@ void switch_chain_selectfeed(int feed) {
   switch_chain_reset();
   // calculate switch and port number
   feed = feed - 1; // feed # starts at 1
-  byte sw = feed / SWITCH_NUM_PORTS; // integer division takes care of floor()
-  byte port = feed - sw * SWITCH_NUM_PORTS;
+  byte sw = feed / switch_num_ports; // integer division takes care of floor()
+  byte port = feed - sw * switch_num_ports;
   // change switch states
   switch_states[sw] = 1 << port;
   // program
@@ -740,11 +785,11 @@ void switch_chain_selectfeed(int feed) {
 //############################################################
 // output switch states (binary)
 void switch_chain_output_states() {
-   for(byte i = 0; i < SWITCH_NUM_SWITCHES - 1; i++) {
+   for(byte i = 0; i < switch_num_switches - 1; i++) {
      Serial.print(switch_states[i], BIN); 
      Serial.print(F(" "));
    }
-   Serial.println(switch_states[SWITCH_NUM_SWITCHES - 1], BIN);
+   Serial.println(switch_states[switch_num_switches - 1], BIN);
 }
 
 
@@ -895,7 +940,7 @@ void serial_inbuf_shift(unsigned int n) {
   spi_dac_mcp4811(switch_port_active);
   delay(LONG_PAUSE);
   // cycle through all ports
-  for(byte i = 0; i < SWITCH_NUM_SWITCHES * SWITCH_NUM_PORTS + 1; i++) {
+  for(byte i = 0; i < switch_num_switches * switch_num_ports + 1; i++) {
     // next switch port
     switch_chain_next();
     // output currently active switch port on DAC output
