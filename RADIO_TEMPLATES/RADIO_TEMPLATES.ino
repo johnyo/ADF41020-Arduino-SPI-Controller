@@ -33,12 +33,17 @@
 /*    clock and timing parameters */
 #define SPI_CLOCK_DEFAULT SPI_CLOCK_DIV2 // default: 8 MHz (for AD41020, MCP4811)
 #define SPI_CLOCK_TLE723X SPI_CLOCK_DIV4 // 4 MHz for TLE723x
-/*    binary masks for chip enable - PORTD (7:PLL, 6: TRIG SIGNAL, 5:DAC, [4:RESERVED], 3:switch-driver-chain) */
-#define SPI_CE_MASK_PLL 0b10000000 // PLL controller
-#define SPI_CE_MASK_DAC 0b00100000 // sync signal DAC
-#define SPI_CE_MASK_DRV 0b00001000 // switch driver chain
+/*    binary masks for chip enable */
+#define SPI_CE_DDR DDRC // data direction register
+#define SPI_CE_PORT PORTC // port
+#define SPI_CE_MASK_PLL 0b00000001 // PLL controller
+#define SPI_CE_MASK_SWI 0b00000010 // switch driver chain
+#define SPI_CE_MASK_DAC 0b00000100 // sync signal DAC
 /*    other digital signals */
-#define DIG_SIGNAL_TRIG 0b01000000 // sweep trigger signal for sampling
+#define DIG_SIGNAL_DDR DDRC // data direction register
+#define DIG_SIGNAL_PORT PORTC // port
+#define DIG_SIGNAL_TRIG 0b00010000 // sweep trigger signal for sampling
+#define DIG_SIGNAL_RSWI 0b00001000 // reset switch chain
 
 /* DAC sync line values (10 bit = 1023 max \approx 4V) */
 #define SYNC_SIGNAL_STARTMEAS 1023 // start of entire measurement/loop
@@ -130,10 +135,12 @@ void setup() {
   serial_reset_cmd_interface();
 
   // Initialize digital outputs
-  //    Define outputs on port D
-  DDRD = DDRD | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_DRV | DIG_SIGNAL_TRIG;
+  //    Define outputs
+  SPI_CE_DDR = SPI_CE_DDR | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI;
+  DIG_SIGNAL_DDR = DIG_SIGNAL_DDR | DIG_SIGNAL_TRIG | DIG_SIGNAL_RSWI;
   //    Initialize outputs
-  PORTD = 0x0;
+  SPI_CE_PORT = 0x0;
+  DIG_SIGNAL_PORT = 0x0;
 
   // Initialize SPI interface
   SPI.begin();
@@ -314,10 +321,10 @@ void serial_command_decode() {
   if (serial_cmd == "RUN:PANELS") {
     continuous_run_panels = false; // switch off continuous modes
     continuous_run_frequency = false;
-    PORTD = PORTD | DIG_SIGNAL_TRIG; // set trigger signal (active high)
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT | DIG_SIGNAL_TRIG; // set trigger signal (active high)
     delayMicroseconds(TRIG_PAUSE);
     run_panel_sweep(); // run
-    PORTD = PORTD & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //    continuously run frequency sweeps for all panels
@@ -329,10 +336,10 @@ void serial_command_decode() {
   else if (serial_cmd == "RUN:FREQ") {
     continuous_run_panels = false; // switch off continuous modes
     continuous_run_frequency = false;
-    PORTD = PORTD | DIG_SIGNAL_TRIG; // set trigger signal (active high)
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT | DIG_SIGNAL_TRIG; // set trigger signal (active high)
     delayMicroseconds(TRIG_PAUSE);
     run_frequency_sweep(); // run
-    PORTD = PORTD & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_TRIG); // reset trigger signal (active high)
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
   }
   //     continuously run frequency sweeps
@@ -807,23 +814,23 @@ void spi_dac_mcp4811(int value) {
   //   bit 1-0: ignored
   value = ((value << 2) & 0b0001111111111100) | 0b0001000000000000;
   // set active low chip enable
-  PORTD = PORTD & (~SPI_CE_MASK_DAC);
+  SPI_CE_PORT = SPI_CE_PORT & (~SPI_CE_MASK_DAC);
   // transfer data
   spi_write_int(value);
   // reset active low chip enable
-  PORTD = PORTD | SPI_CE_MASK_DAC;
+  SPI_CE_PORT = SPI_CE_PORT | SPI_CE_MASK_DAC;
 }
 //############################################################
 // ADF41020 PLL (DEFAULT SPI MODES)
 void spi_pll_adf40120(byte b23to16, byte b15to8, byte b7to0) {
   // set active low chip enable
-  PORTD = PORTD & (~SPI_CE_MASK_PLL);
+  SPI_CE_PORT = SPI_CE_PORT & (~SPI_CE_MASK_PLL);
   // transfer data
   SPI.transfer(b23to16);
   SPI.transfer(b15to8);
   SPI.transfer(b7to0);
   // reset active low chip enable
-  PORTD = PORTD | SPI_CE_MASK_PLL;
+  SPI_CE_PORT = SPI_CE_PORT | SPI_CE_MASK_PLL;
 }
 //############################################################
 // TLE723x switch driver chain, 16 bits/device (USES NON-DEFAULT SPI MODES)
@@ -835,7 +842,7 @@ void spi_drv_tle723x_set(byte *state, size_t num_dev) {
   // prepare command
   byte cmd = 0b11000111; // write, CTL
   // set active low chip enable
-  PORTD = PORTD & (~SPI_CE_MASK_DRV);
+  SPI_CE_PORT = SPI_CE_PORT & (~SPI_CE_MASK_SWI);
   // change SPI timing to what the TLE723x expects (this takes about 2-3us)
   SPI.setDataMode(SPI_MODE_TLE723X);
   SPI.setClockDivider(SPI_CLOCK_TLE723X);
@@ -848,7 +855,7 @@ void spi_drv_tle723x_set(byte *state, size_t num_dev) {
   SPI.setDataMode(SPI_MODE_DEFAULT);
   SPI.setClockDivider(SPI_CLOCK_DEFAULT);
   // reset active low chip enable
-  PORTD = PORTD | SPI_CE_MASK_DRV;
+  SPI_CE_PORT = SPI_CE_PORT | SPI_CE_MASK_SWI;
 }
 
 
