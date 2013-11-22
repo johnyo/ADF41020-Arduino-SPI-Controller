@@ -33,17 +33,52 @@
 /*    clock and timing parameters */
 #define SPI_CLOCK_DEFAULT SPI_CLOCK_DIV2 // default: 8 MHz (for AD41020, MCP4811)
 #define SPI_CLOCK_TLE723X SPI_CLOCK_DIV4 // 4 MHz for TLE723x
-/*    binary masks for chip enable */
+
+///* DIGITAL PORTS - ARDUINO UNO, v3a * /
+///*    masks for chip enable */
+//#define SPI_CE_DDR DDRD // data direction register
+//#define SPI_CE_PORT PORTD // port
+//#define SPI_CE_MASK_PLL 0b10000000 // PLL controller
+//#define SPI_CE_MASK_SWI 0b00001000 // switch driver chain
+//#define SPI_CE_MASK_DAC 0b00100000 // sync signal DAC
+///*    masks for other digital signals */
+//#define DIG_SIGNAL_DDR DDRD // data direction register
+//#define DIG_SIGNAL_PORT PORTD // port
+//#define DIG_SIGNAL_RSWI 0b00000100 // reset switch chain
+//#define DIG_SIGNAL_TRIG 0b01000000 // sweep trigger signal for sampling
+
+/* DIGITAL PORTS - ARDUINO UNO v3b (COMPATIBLE WITH MEGA 2560)  */
+/*    masks for chip enable */
 #define SPI_CE_DDR DDRC // data direction register
 #define SPI_CE_PORT PORTC // port
-#define SPI_CE_MASK_PLL 0b00000001 // PLL controller
-#define SPI_CE_MASK_SWI 0b00000010 // switch driver chain
+//                        76543210
+#define SPI_CE_MASK_PLL 0b00000010 // PLL controller
 #define SPI_CE_MASK_DAC 0b00000100 // sync signal DAC
-/*    other digital signals */
+#define SPI_CE_MASK_SWI 0b00001000 // switch driver chain
+/*    masks for other digital signals */
 #define DIG_SIGNAL_DDR DDRC // data direction register
 #define DIG_SIGNAL_PORT PORTC // port
-#define DIG_SIGNAL_TRIG 0b00010000 // sweep trigger signal for sampling
-#define DIG_SIGNAL_RSWI 0b00001000 // reset switch chain
+//                        76543210
+#define DIG_SIGNAL_MRST 0b00000001 // master reset (wired into the reset circuit)
+#define DIG_SIGNAL_RSWI 0b00010000 // reset switch chain
+#define DIG_SIGNAL_TRIG 0b00100000 // sweep trigger signal for sampling
+
+///* DIGITAL PORTS - ARDUINO MEGA v3b  */
+///*    masks for chip enable */
+//#define SPI_CE_DDR DDRF // data direction register
+//#define SPI_CE_PORT PORTF // port
+////                        76543210
+//#define SPI_CE_MASK_PLL 0b00000010 // PLL controller
+//#define SPI_CE_MASK_DAC 0b00000100 // sync signal DAC
+//#define SPI_CE_MASK_SWI 0b00001000 // switch driver chain
+///*    masks for other digital signals */
+//#define DIG_SIGNAL_DDR DDRF // data direction register
+//#define DIG_SIGNAL_PORT PORTF // port
+////                        76543210
+//#define DIG_SIGNAL_MRST 0b00000001 // master reset (wired into the reset circuit)
+//#define DIG_SIGNAL_RSWI 0b00010000 // reset switch chain
+//#define DIG_SIGNAL_TRIG 0b00100000 // sweep trigger signal for sampling
+
 
 /* DAC sync line values (10 bit = 1023 max \approx 4V) */
 #define SYNC_SIGNAL_STARTMEAS 1023 // start of entire measurement/loop
@@ -54,6 +89,7 @@
 /* SWITCHES */
 #define SWITCH_NUM_PORTS 6 // number of ports per switch (default)
 #define SWITCH_NUM_SWITCHES 12 // MAXIMUM number of switches
+#define SWITCH_STATE_OFF 0b01000000 // "off" state; needed for Agilent switches - port 7 wired to "reset"
 
 /* SWEEP / PLL  */
 /*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
@@ -117,7 +153,7 @@ boolean serial_inbuf_complete = false; // command complete (EOL reached)?
 byte switch_num_switches = SWITCH_NUM_SWITCHES; // number of switches
 byte switch_num_ports = SWITCH_NUM_PORTS; // number of ports per switch
 byte switch_states[SWITCH_NUM_SWITCHES] = {}; // state of all switches in chain (binary)
-byte switch_port_active = 0; // currently active port in switch chain (0 ... #switches * #ports - 1)
+byte switch_port_active = 0; // currently active port in switch chain (0: all off, 1 ... #switches * #ports)
 byte switch_port_mask = (1 << (switch_num_ports + 1)) - 1; // port mask (ones up to switch_num_ports, zeros otherwise)
 
 
@@ -134,14 +170,14 @@ void setup() {
   // Reset command interface
   serial_reset_cmd_interface();
 
-  // Initialize digital outputs
-  //    Define outputs
-  SPI_CE_DDR = SPI_CE_DDR | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI;
-  DIG_SIGNAL_DDR = DIG_SIGNAL_DDR | DIG_SIGNAL_TRIG | DIG_SIGNAL_RSWI;
-  //    Initialize outputs
-  SPI_CE_PORT = 0x0;
-  DIG_SIGNAL_PORT = 0x0;
-
+  // Initialize digital outputs (init first; then define as outputs to avoid glitches)
+  //    Chip enable signals (active low)
+  SPI_CE_PORT = 0x0 | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI; // initialize
+  SPI_CE_DDR = SPI_CE_DDR | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI; // set as outputs
+  //    Other digital signals (master reset is active low; others are active high)
+  DIG_SIGNAL_PORT = 0x0 | DIG_SIGNAL_MRST; // reset is active low; others active high
+  DIG_SIGNAL_DDR = DIG_SIGNAL_DDR | DIG_SIGNAL_TRIG | DIG_SIGNAL_MRST | DIG_SIGNAL_RSWI;
+  
   // Initialize SPI interface
   SPI.begin();
   //   Set default bit order
@@ -171,6 +207,7 @@ void setup() {
   
   // Initialize switch chain (all off)
   switch_chain_reset();
+  switch_chain_apply();
   
 }
 
@@ -231,6 +268,7 @@ void run_panel_sweep() {
   }
   // reset switch chain
   switch_chain_reset();
+  switch_chain_apply();
   // wait for switches to (dis)connect
   delayMicroseconds(sweep_pause_time - sweep_pulse_time);
 }
@@ -526,6 +564,14 @@ void serial_command_decode() {
       Serial.println(((long)N2[i]) << 16 | ((long)N1[i]) << 8 | (long)N0[i], HEX);
     }  
   } 
+  //    master reset
+  else if (serial_cmd == "RESET") {
+    Serial.print(SERIAL_HANDSHAKE_ERR);
+    Serial.println(F("RESET function deactivated for now; disrupts upload."));
+//    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+//    delay(100); // allow for enough time to transfer the OK signal
+//    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_MRST); // pull reset port to ground -> reset
+  } 
   //    unrecognized command; throw an error
   else {
     Serial.print(SERIAL_HANDSHAKE_ERR);
@@ -726,73 +772,57 @@ void pll_adf40120_init() {
 //############################################################
 // SWITCH CHAIN CONTROL FUNCTIONS
 //############################################################
-// apply current state to switch chain
-void switch_chain_apply() {
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
-}
-//############################################################
 // reset switch chain
 void switch_chain_reset() {
-  // reset states
   for(byte i = 0; i < switch_num_switches; i++) {
-    switch_states[i] = 0;
+    switch_states[i] = SWITCH_STATE_OFF;
   }
-  switch_port_active = 0;
-  // program
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
 }
 //############################################################
 // initialize switch chain (set first switch)
 void switch_chain_init() {
-  // reset states
-  for(byte i = 0; i < switch_num_switches; i++) {
-    switch_states[i] = 0;
-  }
-  // activate first switch
-  switch_states[0] = 1;
+  // select first port and program
   switch_port_active = 1;
-  // program
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+  switch_chain_selectfeed(switch_port_active);
 }
 //############################################################
 // next switch
 void switch_chain_next() {
-  // carry over
-  byte co_this = 0; // this switch
-  byte co_last = 0; // last switch
-  // activate next switch by shifting states
-  for(byte i = 0; i < switch_num_switches; i++) {
-    // save MSB state / carry-over
-    co_last = co_this;
-    co_this = switch_states[i] >> switch_num_ports;
-    // shift: next switch + carry-over; make sure only switch_num_ports can be active
-    switch_states[i] = (switch_states[i] << 1 | co_last) & switch_port_mask;
+  // select next port (circular)
+  if (switch_port_active < switch_num_switches * switch_num_ports) {
+    switch_port_active++;
+  } else {
+    switch_port_active = 1;
   }
-  // next port is active
-  switch_port_active++;
   // program
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+  switch_chain_selectfeed(switch_port_active);
 }
 //############################################################
 // select a specific port/feed (numbering starts at 1)
 void switch_chain_selectfeed(int feed) {
-  // reset switch chain
+  // set states to inactive (reset)
   switch_chain_reset();
-  // calculate switch and port number
-  feed = feed - 1; // feed # starts at 1
-  byte sw = feed / switch_num_ports; // integer division takes care of floor()
-  byte port = feed - sw * switch_num_ports;
-  // change switch states
-  switch_states[sw] = 1 << port;
+  // calculate switch and port number for given feed (feed=0 -> reset)
+  if (feed > 0) {
+    feed = feed - 1; // feed # starts at 1
+    byte sw = feed / switch_num_ports; // integer division takes care of floor()
+    byte port = feed - sw * switch_num_ports;
+    // change state of selected switch
+    switch_states[sw] = 1 << port;
+    }
   // program
-  spi_drv_tle723x_set(switch_states, sizeof(switch_states));
+  switch_chain_apply();
 }
-
+//############################################################
+// apply current state to switch chain
+void switch_chain_apply() {
+  spi_drv_tle723x_set(switch_states);
+}
 //############################################################
 // output switch states (binary)
 void switch_chain_output_states() {
    for(byte i = 0; i < switch_num_switches - 1; i++) {
-     Serial.print(switch_states[i], BIN); 
+     Serial.print(switch_states[i], BIN);
      Serial.print(F(" "));
    }
    Serial.println(switch_states[switch_num_switches - 1], BIN);
@@ -838,7 +868,7 @@ void spi_pll_adf40120(byte b23to16, byte b15to8, byte b7to0) {
 //   bit 13-11: 0
 //   bit 10- 8: address (CTL: 111)
 //   bit  7- 0: data / state 
-void spi_drv_tle723x_set(byte *state, size_t num_dev) {
+void spi_drv_tle723x_set(byte *state) {
   // prepare command
   byte cmd = 0b11000111; // write, CTL
   // set active low chip enable
@@ -847,7 +877,7 @@ void spi_drv_tle723x_set(byte *state, size_t num_dev) {
   SPI.setDataMode(SPI_MODE_TLE723X);
   SPI.setClockDivider(SPI_CLOCK_TLE723X);
   // transfer data for entire chain
-  for(int i = 0; i < num_dev; i++) {
+  for(int i = 0; i < switch_num_switches; i++) {
     SPI.transfer(cmd);
     SPI.transfer(state[i]);
   }
