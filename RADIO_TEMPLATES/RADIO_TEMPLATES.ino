@@ -566,11 +566,9 @@ void serial_command_decode() {
   } 
   //    master reset
   else if (serial_cmd == "RESET") {
-    Serial.print(SERIAL_HANDSHAKE_ERR);
-    Serial.println(F("RESET function deactivated for now; disrupts upload."));
-//    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
-//    delay(100); // allow for enough time to transfer the OK signal
-//    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_MRST); // pull reset port to ground -> reset
+    Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+    delay(100); // allow for enough time to transfer the OK signal
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_MRST); // pull reset port to ground -> reset
   } 
   //    unrecognized command; throw an error
   else {
