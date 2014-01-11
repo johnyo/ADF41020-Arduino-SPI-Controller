@@ -37,11 +37,12 @@ Testmodes = int8(1);
 
 RFout = RFout / 4;
 
-P = int32(2^Prescaler * 8);
-R = int32(REFin * 1000 / PFDFreq);
-N = int32(RFout * 1000 / PFDFreq);
-B = int32(N / P);
-A = int32(N - (B * P));
+% attention: integer division rounds to closest integer in Matlab, not towards zero => use floor
+P = uint32(2^Prescaler * 8);
+R = uint32(floor( REFin * 1000 / PFDFreq ));
+N = uint32(floor( RFout * 1000 / PFDFreq ));
+B = uint32(floor( double(N) / double(P)  ));
+A = uint32(N - (B * P));
 
 RFout_set = (((4 * (B * P + A)) * PFDFreq) / 1000);
            

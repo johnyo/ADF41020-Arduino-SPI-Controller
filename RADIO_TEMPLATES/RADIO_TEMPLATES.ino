@@ -175,7 +175,7 @@ void setup() {
   SPI_CE_PORT = 0x0 | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI; // initialize
   SPI_CE_DDR = SPI_CE_DDR | SPI_CE_MASK_PLL | SPI_CE_MASK_DAC | SPI_CE_MASK_SWI; // set as outputs
   //    Other digital signals (master reset is active low; others are active high)
-  DIG_SIGNAL_PORT = 0x0 | DIG_SIGNAL_MRST; // reset is active low; others active high
+  DIG_SIGNAL_PORT = 0x0 | DIG_SIGNAL_MRST | DIG_SIGNAL_RSWI; // resets are active low; others active high
   DIG_SIGNAL_DDR = DIG_SIGNAL_DDR | DIG_SIGNAL_TRIG | DIG_SIGNAL_MRST | DIG_SIGNAL_RSWI;
   
   // Initialize SPI interface
@@ -546,9 +546,15 @@ void serial_command_decode() {
   //    select specific switch port (ports # start at 1)
   else if (serial_cmd == "SWITCH:SELECT") {
     serial_parse_next_token(false); // get value from buffer
-    switch_chain_selectfeed(serial_val); // switch on this feed
-    Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
-    Serial.println(serial_val);
+    if ((serial_val >= 0) && (serial_val <= switch_num_switches * switch_num_ports)) {
+      switch_chain_selectfeed(serial_val); // switch on this feed
+      Serial.print(SERIAL_HANDSHAKE_OK + serial_cmd + " "); // send feedback
+      Serial.println(serial_val);
+    } else {
+      Serial.print(SERIAL_HANDSHAKE_ERR + serial_cmd + " ");
+      Serial.print(serial_val);
+      Serial.println(F(": Feed does not exist."));
+    }
   } 
   //    get number of frequencies in sweep
   else if (serial_cmd == "SWEEP:POINTS?") {
@@ -567,8 +573,9 @@ void serial_command_decode() {
   //    master reset
   else if (serial_cmd == "RESET") {
     Serial.println(SERIAL_HANDSHAKE_OK + serial_cmd); // send feedback
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_RSWI); // reset all bus devices
     delay(100); // allow for enough time to transfer the OK signal
-    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_MRST); // pull reset port to ground -> reset
+    DIG_SIGNAL_PORT = DIG_SIGNAL_PORT & (~DIG_SIGNAL_MRST); // pull the Arduino's reset port to ground as well -> full reset
   } 
   //    unrecognized command; throw an error
   else {
@@ -801,14 +808,14 @@ void switch_chain_selectfeed(int feed) {
   // set states to inactive (reset)
   switch_chain_reset();
   // calculate switch and port number for given feed (feed=0 -> reset)
-  if (feed > 0) {
+  if ((feed > 0) && (feed <= switch_num_switches * switch_num_ports)) {
     feed = feed - 1; // feed # starts at 1
     byte sw = feed / switch_num_ports; // integer division takes care of floor()
     byte port = feed - sw * switch_num_ports;
     // change state of selected switch
     switch_states[sw] = 1 << port;
-    }
-  // program
+  }
+  // program (note: program is needed outside if to make feed = 0 reset
   switch_chain_apply();
 }
 //############################################################
