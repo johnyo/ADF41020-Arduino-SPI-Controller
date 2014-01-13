@@ -93,7 +93,7 @@
 
 /* SWEEP / PLL  */
 /*    basics (other PLL config parameters can be found in pll_adf40120_addfreq) */
-#define MAX_NUM_FREQ 101 // maximum number of frequencies
+#define MAX_NUM_FREQ 102 // maximum number of frequencies
 #define PLL_RF_INPUT_FREQ 100 // RF Input Frequency in MHz
 /*    timing parameters (approximate; plus execution time) */
 #define DWELL_TIME 1000 // default dwell time in microseconds
